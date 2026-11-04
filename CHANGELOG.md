@@ -7,7 +7,7 @@ All notable changes to Weave Client are recorded here. The format follows
 The newest entries are what the app shows under **What's new** after it updates, so they are
 written for the people using it rather than for the people building it.
 
-## [Unreleased]
+## [0.1.72] - 2026-11-04
 
 ### Added
 - **Weave in a phone's browser.** At a phone's width the app becomes one column: the
@@ -52,6 +52,11 @@ written for the people using it rather than for the people building it.
   sent the moment it was picked. On a phone the bubble opens as a sheet along the bottom, so
   its message box and picture button stay above the keyboard, and a message arriving while
   you type no longer takes the cursor out of the box.
+
+- **Right-click in the desktop app.** It now offers Cut, Copy and Paste in a message box,
+  Copy on selected text and links, and Copy image on a picture in the chat — so a picture can
+  be copied out of a conversation and pasted into a bubble or a channel. Before, a right-click
+  did nothing at all.
 
 - **Touch controls on Samsung phones.** Some Samsung phones, the Galaxy S9 among them,
   report that they can hover like a mouse, so the controls that wait for a mouse to come near
