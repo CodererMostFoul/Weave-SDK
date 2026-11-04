@@ -187,7 +187,9 @@ test('a phone gets one column, a dock for its voice controls, and the rail in th
 
 test('nothing waits for a hover a touchscreen cannot make', () => {
     const shell = code(read('shell.css'));
-    const { at, body } = mediaBlock(shell, '(hover: none)');
+    // Either signal: a Galaxy S9 reports hover: hover with nothing attached, so
+    // (hover: none) alone left every control below hidden on it.
+    const { at, body } = mediaBlock(shell, '(hover: none), (pointer: coarse)');
     // Each hover-only control, and the hover rule it replaces. The reveal has to come AFTER
     // that rule: both have the same specificity, and the later one wins — a reveal placed
     // above it would be overruled without a word.

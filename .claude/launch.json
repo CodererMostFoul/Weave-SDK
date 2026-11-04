@@ -8,6 +8,12 @@
       "port": 5173
     },
     {
+      "name": "weave-client-vite-phone",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--", "--host", "127.0.0.1"],
+      "port": 5173
+    },
+    {
       "name": "weave-client-mobile",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev:mobile"],

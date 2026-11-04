@@ -53,6 +53,11 @@ written for the people using it rather than for the people building it.
   its message box and picture button stay above the keyboard, and a message arriving while
   you type no longer takes the cursor out of the box.
 
+- **Touch controls on Samsung phones.** Some Samsung phones, the Galaxy S9 among them,
+  report that they can hover like a mouse, so the controls that wait for a mouse to come near
+  (Watch on a stream, a room's chat button, a link preview's close button) stayed hidden on
+  them. Any phone now shows them.
+
 - **Invite links filled in the code.** Opening Weave from an invite link went to the sign-up
   form, but the invite code field was sometimes empty — always, when the link was what
   started the app. The code is now there every time.

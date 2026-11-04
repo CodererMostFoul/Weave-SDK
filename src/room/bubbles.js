@@ -23,8 +23,11 @@ const FIRST_PAGE = 30;
 
 /** A phone: the card becomes a sheet along the bottom, as a person's menu does there. */
 const PHONE = '(max-width: 480px)';
-/** A touchscreen with nothing else: focusing the input there throws the keyboard up. */
-const TOUCH_ONLY = '(hover: none) and (pointer: coarse)';
+/**
+ * A finger as the main pointer: focusing the input there throws the keyboard up. Not
+ * (hover: none), which some phones get wrong — see the Touch section of shell.css.
+ */
+const TOUCH_ONLY = '(pointer: coarse)';
 const matches = (query) => Boolean(window.matchMedia?.(query).matches);
 
 /**

@@ -3282,12 +3282,17 @@
 /* Keyed on what the device can DO, not on which build this is: a phone browser needs every
  * rule here as much as the Android app does, and a laptop with a touchscreen gets the bigger
  * targets without losing its hover. Last in the file on purpose — each rule below replaces a
- * hover rule declared above it at the same specificity, and the later one wins. */
+ * hover rule declared above it at the same specificity, and the later one wins.
+ *
+ * "A finger is the main pointer" is (pointer: coarse), and every block here asks it, beside
+ * (hover: none) or instead of it, because (hover: none) alone misses real phones: a Galaxy S9
+ * running the Android app reports hover: hover and an any-pointer: fine, from its own
+ * firmware, with nothing plugged in. On that phone every hover-only control stayed hidden. */
 
 /* Nothing can be hovered, so everything that waited for a pointer to come close is shown.
  * Each of these was unreachable by touch: a control at opacity 0 still takes the tap, but
  * nobody taps what they cannot see. */
-@media (hover: none) {
+@media (hover: none), (pointer: coarse) {
     .room-chat,
     .msg.continued .msg-gutter-time,
     .preview-dismiss,
@@ -3336,7 +3341,7 @@
 /* Shortcuts are keys, and a touchscreen has none to press: the settings that capture one are
  * not offered where they could never be used. Push-to-talk itself stays — its button is the
  * key on a phone (see .round-btn.ptt). */
-@media (hover: none) and (pointer: coarse) {
+@media (pointer: coarse) {
     .needs-keyboard { display: none; }
 }
 
