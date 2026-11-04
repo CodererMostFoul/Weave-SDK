@@ -46,6 +46,13 @@ written for the people using it rather than for the people building it.
   until you interacted, clicking changed nothing — it only came back when somebody new started
   talking. A click or a key now starts it.
 
+- **Pictures in bubbles.** A bubble now takes a picture the way a channel does: paste a
+  screenshot straight into it, or choose one, and it waits as a chip until you send it, with
+  words or without. Before, pasting a picture into a bubble did nothing, and a chosen one was
+  sent the moment it was picked. On a phone the bubble opens as a sheet along the bottom, so
+  its message box and picture button stay above the keyboard, and a message arriving while
+  you type no longer takes the cursor out of the box.
+
 - **Invite links filled in the code.** Opening Weave from an invite link went to the sign-up
   form, but the invite code field was sometimes empty — always, when the link was what
   started the app. The code is now there every time.

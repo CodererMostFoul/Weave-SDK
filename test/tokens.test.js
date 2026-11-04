@@ -253,3 +253,18 @@ test("the phone's own bars are kept clear through the safe tokens, and only thro
     assert.match(rule(code(read('shell.css')), '.peer-menu.as-sheet'), /var\(--safe-bottom\)/,
         'a sheet along the bottom clears the gesture bar');
 });
+
+test("a bubble's card is a sheet on a phone, and a rebuilt card does not make a second entrance", () => {
+    const css = code(read('shell.css'));
+    const body = (selector) => {
+        const at = css.indexOf(`\n${selector} {`);
+        return at < 0 ? '' : css.slice(css.indexOf('{', at) + 1, css.indexOf('}', at));
+    };
+    const sheet = body('.bubble-popup.as-sheet');
+    assert.match(sheet, /bottom: 0;/, 'pinned to the bottom, so it rides above the keyboard');
+    assert.match(sheet, /padding-bottom: var\(--safe-bottom\)/, 'and clear of the gesture bar');
+    assert.match(body('.bubble-popup.settled'), /animation: none;/);
+    // Equal specificity, so the order is what makes "settled" win over both entrances.
+    assert.ok(css.indexOf('\n.bubble-popup.settled {') > css.indexOf('\n.bubble-popup.as-sheet {'));
+    assert.ok(css.indexOf('\n.bubble-popup.settled {') > css.indexOf('\n.bubble-popup {'));
+});

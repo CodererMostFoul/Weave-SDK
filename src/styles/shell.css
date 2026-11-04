@@ -2173,6 +2173,9 @@
 .bubble-popup-body .attach-image { max-width: 100%; }
 .bubble-popup-note { margin: var(--s-3) 0; color: var(--ink-faint); font-size: var(--t-sm); text-align: center; }
 .bubble-popup-note.error { color: var(--bad-text); }
+/* The picture waiting to be sent: the channel composer's chip, on the card. */
+.bubble-popup-attach { padding: var(--s-1) var(--s-2) 0; }
+.bubble-popup-attach:empty { display: none; }
 .bubble-popup-composer {
     display: flex;
     align-items: center;
@@ -3353,6 +3356,23 @@
     border-bottom: 0;
     animation: sheet-up var(--dur) var(--ease);
 }
+/* A bubble's card on a phone: the same sheet. Pinned to the bottom of a layout that shrinks
+ * for the keyboard, so the message box and the picture button ride above the keyboard
+ * rather than vanishing under it, which a card placed for the full screen did. */
+.bubble-popup.as-sheet {
+    left: 0;
+    right: 0;
+    top: auto;
+    bottom: 0;
+    width: auto;
+    max-height: 72dvh;
+    padding-bottom: var(--safe-bottom);
+    border-radius: var(--r-4) var(--r-4) 0 0;
+    border-bottom: 0;
+    animation: sheet-up var(--dur) var(--ease);
+}
+/* A card rebuilt for new content (a message, a picture) is the same card: no second entrance. */
+.bubble-popup.settled { animation: none; }
 @keyframes sheet-up {
     from { transform: translateY(24px); opacity: 0; }
     to { transform: none; opacity: 1; }
