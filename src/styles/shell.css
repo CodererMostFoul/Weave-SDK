@@ -1,0 +1,3359 @@
+/* The application shell: four columns, a title bar, and nothing that scrolls the page.
+ *
+ * The layout rule that keeps this honest: every column is a grid or flex child with
+ * `min-height: 0`, and only the designated inner region scrolls. CSS grid and flex children
+ * default to `min-height: auto`, which means a long list silently pushes its parent taller
+ * instead of scrolling — that single default is responsible for most "why is my composer
+ * off the bottom of the screen" bugs, and it does not announce itself.
+ */
+
+/* The columns are PANELS — rounded, separated, floating on the void — rather than four
+ * flush rectangles divided by seam lines. The seams-and-squares version is what made the
+ * whole app read as a decade old however good the contents were. */
+.app-shell {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    height: 100vh;
+    height: 100dvh;
+    /* Zero everywhere but the Android app, which draws under its status and gesture bars
+       and must keep its own controls out from under them. */
+    padding: var(--safe-top) var(--safe-right) var(--safe-bottom) var(--safe-left);
+    background: var(--bg-void);
+    overflow: hidden;
+}
+
+/* ── Title bar ────────────────────────────────────────────────────────────── */
+
+.titlebar {
+    display: flex;
+    align-items: center;
+    gap: var(--s-3);
+    height: var(--titlebar-h);
+    padding: 0 var(--s-3);
+    /* No background and no border: the bar shares the void the panels float on, so the
+       window has one calm frame instead of a stacked pair of dark strips. */
+    /* The desktop shell makes this the window drag region; interactive children opt out
+       again below, or they become impossible to click. */
+    -webkit-app-region: drag;
+    /* The desktop window draws minimise/maximise/close OVER the top-right corner.
+       titlebar-area-* exists exactly to say where they are not; in a browser the
+       fallbacks make the inset zero and the base padding stands. */
+    padding-right: max(var(--s-3), calc(100% - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100%)));
+}
+
+.titlebar-word {
+    font-weight: 620;
+    letter-spacing: -0.01em;
+    font-size: var(--t-base);
+    color: var(--ink-dim);
+}
+.titlebar button,
+.titlebar .conn-pill { -webkit-app-region: no-drag; }
+
+.titlebar-spacer { flex: 1; }
+
+.app-chip {
+    display: grid;
+    place-items: center;
+    width: 30px; height: 30px;
+    border-radius: var(--r-2);
+    background: linear-gradient(150deg, var(--accent-hi), var(--accent-deep));
+    color: var(--on-accent);
+    box-shadow: 0 6px 18px -8px var(--accent);
+    flex: none;
+}
+.app-chip svg { width: 18px; height: 18px; }
+
+/* The one honest readout of whether this thing is working. While it IS working it fades
+   to ambient telemetry — quiet text, no box. Chrome that shouts "Connected" all day is
+   noise, and noise teaches people to stop reading the place real problems appear. */
+.conn-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--s-2);
+    padding: 5px 12px 5px var(--s-2);
+    border: 1px solid var(--line);
+    border-radius: var(--r-pill);
+    background: var(--surface-1);
+    font-size: var(--t-sm);
+    color: var(--ink-dim);
+    white-space: nowrap;
+    transition: background var(--dur), border-color var(--dur), color var(--dur);
+}
+.conn-pill[data-state="live"] {
+    background: transparent;
+    border-color: transparent;
+    color: var(--ink-faint);
+}
+.conn-dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--presence-off);
+    flex: none;
+}
+.conn-pill[data-state="live"] .conn-dot { background: var(--presence-live); }
+.conn-pill[data-state="degraded"] .conn-dot { background: var(--presence-idle); }
+.conn-pill[data-state="lost"] .conn-dot { background: var(--presence-busy); }
+.conn-pill[data-state="lost"] { color: var(--bad-text); border-color: rgb(var(--bad-rgb) / 0.3); }
+.conn-sep { color: var(--ink-ghost); }
+
+/* ── Columns ──────────────────────────────────────────────────────────────── */
+
+.app-body {
+    display: grid;
+    grid-template-columns: var(--rail-w) var(--sidebar-w) minmax(0, 1fr);
+    gap: var(--s-2);
+    padding: 0 var(--s-2) var(--s-2);
+    min-height: 0;
+    min-width: 0;
+}
+.app-body > * { min-height: 0; min-width: 0; }
+
+/* ── Rail: direct messages ────────────────────────────────────────────────── */
+
+.rail {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--s-2);
+    padding: var(--s-3) 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+}
+.rail::-webkit-scrollbar { width: 0; }
+
+.rail-divider {
+    width: 26px;
+    height: 1px;
+    background: var(--line);
+    flex: none;
+    margin: var(--s-1) 0;
+}
+
+.rail-item {
+    position: relative;
+    width: 46px; height: 46px;
+    border-radius: var(--r-4);
+    display: grid;
+    place-items: center;
+    flex: none;
+    color: var(--ink-dim);
+    background: var(--surface-2);
+    font-weight: 600;
+    font-size: var(--t-base);
+    transition: border-radius var(--dur) var(--ease), background var(--dur), color var(--dur);
+}
+.rail-item:hover { border-radius: var(--r-2); color: var(--ink); background: var(--surface-3); }
+.rail-item.home {
+    background: linear-gradient(150deg, var(--accent-hi), var(--accent-deep));
+    color: var(--on-accent);
+    box-shadow: 0 8px 22px -10px var(--accent);
+}
+/* The active tile is unmistakable: the squircle relaxes, an accent ring holds it, and
+   the edge pip sits INSIDE the rail. The old pip was positioned off the rail's left
+   edge, where overflow clipped it — an active DM looked identical to an idle one. */
+.rail-item.current {
+    border-radius: var(--r-2);
+    color: var(--ink);
+    box-shadow: 0 0 0 2px var(--accent), 0 6px 18px -8px var(--accent-glow);
+}
+.rail-item.current::before {
+    content: "";
+    position: absolute;
+    left: -10px;
+    width: 4px; height: 26px;
+    border-radius: 0 var(--r-1) var(--r-1) 0;
+    background: var(--ink);
+}
+
+.rail-item svg { width: 24px; height: 24px; }
+
+.rail-item.add {
+    background: transparent;
+    border: 1px dashed var(--line-strong);
+    color: var(--ink-faint);
+}
+.rail-item.add:hover { border-color: var(--accent); color: var(--accent-hi); }
+
+/* Unread count. Sits over the tile corner, and is never allowed to grow the tile. */
+.rail-badge {
+    position: absolute;
+    right: -2px; bottom: -2px;
+    min-width: 19px; height: 19px;
+    padding: 0 5px;
+    border-radius: var(--r-pill);
+    background: var(--bad);
+    border: 2px solid var(--bg-void);
+    color: var(--on-accent);
+    font-size: var(--t-xs);
+    font-weight: 700;
+    line-height: 15px;
+    text-align: center;
+}
+
+/* ── Sidebar ──────────────────────────────────────────────────────────────── */
+
+.sidebar {
+    display: grid;
+    grid-template-rows: auto auto minmax(0, 1fr) auto;
+    background: var(--surface-1);
+    border: 1px solid var(--line-soft);
+    border-radius: var(--r-4);
+    overflow: hidden;
+}
+
+.sidebar-head {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    padding: var(--s-4) var(--s-4) var(--s-3);
+}
+.sidebar-title {
+    font-size: var(--t-lg);
+    font-weight: 620;
+    letter-spacing: -0.015em;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.pill-count {
+    padding: 2px var(--s-2);
+    border-radius: var(--r-pill);
+    background: var(--surface-3);
+    color: var(--ink-dim);
+    font-size: var(--t-sm);
+    font-weight: 600;
+    flex: none;
+}
+
+.sidebar-search { padding: 0 var(--s-3) var(--s-3); }
+.search-box {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    background: var(--surface-0);
+    border: 1px solid var(--line-soft);
+    border-radius: var(--r-2);
+    padding: 0 var(--s-3);
+}
+.search-box:focus-within { border-color: var(--accent); }
+.search-box svg { width: 15px; height: 15px; color: var(--ink-faint); flex: none; }
+.search-box input {
+    flex: 1;
+    min-width: 0;
+    background: none;
+    border: 0;
+    padding: var(--s-2) 0;
+    font-size: var(--t-base);
+}
+/* The ring is pulled inside the wrapper's border rather than suppressed. A component that
+   sets `outline: none` out-specifies the global :focus-visible rule and silently leaves a
+   keyboard user with no indicator at all — see the note in base.css. */
+.search-box input:focus-visible { outline-offset: -4px; }
+.search-box input::placeholder { color: var(--ink-ghost); }
+
+.room-scroll { overflow-y: auto; padding: 0 var(--s-2) var(--s-3); }
+
+.room-group + .room-group { margin-top: var(--s-4); }
+.room-group-head {
+    display: flex;
+    align-items: center;
+    gap: var(--s-1);
+    margin: 0;
+    padding: var(--s-2) var(--s-3) var(--s-1);
+    font-size: var(--t-xs);
+    font-weight: 700;
+    letter-spacing: 0.09em;
+    color: var(--ink-faint);
+    text-transform: uppercase;
+}
+.room-group-caret { font-size: var(--t-sm); }
+
+.room-list { list-style: none; margin: 0; padding: 0; }
+
+/* The hash sits where the speaker icon does, so the two kinds of room line up. */
+.room-hash {
+    display: grid;
+    place-items: center;
+    width: 17px;
+    flex: none;
+    font-size: var(--t-lg);
+    font-weight: 500;
+    color: var(--ink-faint);
+}
+
+/* Unread on a text strand is a demand; occupancy on a voice room is a fact. They are
+   styled apart so a busy room never reads as an obligation. */
+.room-unread {
+    min-width: 19px;
+    padding: 0 6px;
+    border-radius: var(--r-pill);
+    background: var(--bad);
+    color: var(--on-accent);
+    font-size: var(--t-xs);
+    font-weight: 700;
+    line-height: 18px;
+    text-align: center;
+    flex: none;
+}
+
+/* Addressed to YOU: the bell plus how many times. Louder than a plain unread count. */
+.room-mention {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    min-width: 19px;
+    padding: 0 6px;
+    border-radius: var(--r-pill);
+    background: rgb(var(--gold-rgb) / 0.16);
+    color: var(--gold);
+    font-size: var(--t-xs);
+    font-weight: 700;
+    line-height: 18px;
+    flex: none;
+}
+.room-mention svg { width: 11px; height: 11px; }
+
+/* A private room you are not on the list for: visible, calm, not a button. */
+.room-item.locked .room-row { color: var(--ink-faint); cursor: default; }
+.room-item.locked .room-row:hover { background: transparent; color: var(--ink-faint); }
+.room-item.locked .room-row svg { color: var(--ink-ghost); }
+
+/* The voice room you are STANDING in while reading somewhere else. */
+.room-item.occupied .room-row svg { color: var(--ok); }
+.room-item.occupied .room-row .room-name { color: var(--ink); }
+
+.room-line { display: flex; align-items: center; gap: 2px; }
+.room-line .room-row { flex: 1; min-width: 0; }
+
+/* The other half of the split: opens this room's chat WITHOUT joining its voice.
+   Quiet until the row is under the pointer, so the list stays calm. */
+.room-chat {
+    display: grid;
+    place-items: center;
+    width: 28px; height: 28px;
+    border-radius: var(--r-2);
+    color: var(--ink-faint);
+    opacity: 0;
+    flex: none;
+    transition: opacity var(--dur-fast) var(--ease), background var(--dur-fast), color var(--dur-fast);
+}
+.room-line:hover .room-chat,
+.room-chat:focus-visible,
+.room-item.current .room-chat { opacity: 1; }
+.room-chat:hover { background: var(--surface-3); color: var(--ink); }
+.room-chat svg { width: 15px; height: 15px; }
+
+.room-row {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    width: 100%;
+    padding: var(--s-2) var(--s-3);
+    border-radius: var(--r-2);
+    color: var(--ink-dim);
+    text-align: left;
+    transition: background var(--dur-fast), color var(--dur-fast);
+}
+.room-row:hover { background: var(--surface-2); color: var(--ink); }
+.room-row svg { width: 17px; height: 17px; flex: none; }
+.room-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 500;
+}
+.room-count {
+    font-size: var(--t-sm);
+    color: var(--ink-faint);
+    font-variant-numeric: tabular-nums;
+    flex: none;
+}
+.room-item.current .room-row {
+    position: relative;
+    background: var(--accent-tint-hi);
+    color: var(--ink);
+}
+.room-item.current .room-row::before {
+    content: "";
+    position: absolute;
+    left: 0; top: 50%;
+    transform: translateY(-50%);
+    width: 3px; height: 60%;
+    border-radius: 0 var(--r-1) var(--r-1) 0;
+    background: var(--accent-hi);
+}
+.room-item.current .room-row .room-hash { color: var(--accent-hi); }
+.room-item.current .room-row .room-count { color: var(--accent-hi); }
+
+/* A room nobody is in reads as available rather than as broken. */
+.room-empty {
+    display: block;
+    padding: 0 var(--s-3) var(--s-2) 42px;
+    margin-top: -2px;
+    font-size: var(--t-xs);
+    color: var(--ink-ghost);
+    font-style: italic;
+}
+
+/* Who is in the room, listed under it. */
+.room-people { list-style: none; margin: var(--s-1) 0 var(--s-2); padding: 0; }
+.room-person {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    padding: 3px var(--s-3) 3px var(--s-5);
+    font-size: var(--t-base);
+    color: var(--ink-dim);
+    border-radius: var(--r-2);
+    /* A person is a CONTROL you right-click, not a paragraph you read. Left as default
+       these rows behaved like prose: an I-beam cursor over every name, and dragging
+       across the list selected text instead of doing the thing dragging now does. */
+    cursor: default;
+    user-select: none;
+}
+.room-person:hover { background: var(--surface-2); }
+/* Whose menu is currently open. Held while the menu is up so the row does not appear to
+   lose focus the moment the pointer moves off it and onto the menu. */
+.room-person.selected { background: var(--surface-3); color: var(--ink); }
+
+/* An administrator can pick a person up and put them in another room, so the cursor says
+   so. Applied from the shell rather than the row, because whether it is true is a fact
+   about YOU, not about the person under the pointer. */
+.app-shell[data-can-move] .room-person { cursor: grab; }
+.app-shell[data-can-move] .room-person.is-dragging { cursor: grabbing; opacity: 0.4; }
+.room-person .person-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.room-person.is-self .person-name { color: var(--ink); font-weight: 550; }
+.person-marks { display: flex; gap: var(--s-1); align-items: center; flex: none; color: var(--ink-faint); }
+.person-marks svg { width: 13px; height: 13px; }
+.person-marks .mark-star { color: var(--gold); }
+.person-marks .mark-muted { color: var(--ink-faint); }
+/* An administrator's mute is louder than a self-mute on purpose: one is a choice, the
+   other is a moderation decision somebody watching the roster may need to see. */
+.person-marks .mark-forced { color: var(--bad); }
+
+/* ── The Loom ─────────────────────────────────────────────────────────────── */
+
+/* The room you are standing in: the same occupant rows, with a strings canvas beside
+   them. See src/ui/loom.js — the renderer derives each string's row as height/voices,
+   so the canvas MUST be exactly as tall as the list next to it or the strings stop
+   lining up with the faces they belong to. Stretching both in one flex row is what
+   guarantees that, and is why this is not a grid. */
+/* The spacing lives HERE, on the wrapper, and both children are flush. Declared on the
+   two columns instead, it was 4px/8px on one and 4px/0 on the other: the canvas came out
+   eight pixels shorter than the list, the renderer divided that height by the number of
+   people, and every string sat a little higher than the face it belonged to — worse the
+   further down you looked. Two declarations that have to agree eventually will not. */
+.loom {
+    display: flex;
+    align-items: stretch;
+    margin: var(--s-1) 0 var(--s-2);
+}
+.loom-anchors {
+    width: var(--loom-anchors-w);
+    flex: none;
+    margin: 0;
+}
+/* A fixed row, so a long display name cannot make one string taller than the rest. */
+.loom-anchors .room-person {
+    height: var(--loom-row);
+    padding-top: 0;
+    padding-bottom: 0;
+}
+.loom-canvas-wrap { flex: 1; min-width: 0; position: relative; }
+.loom-canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+    pointer-events: none;
+}
+.person-marks .mark-share { color: var(--accent-hi); }
+
+/* ── Cropping a profile picture ───────────────────────────────────────────── */
+
+.setting-buttons { display: flex; gap: var(--s-2); align-items: center; flex: none; }
+
+.crop { margin: var(--s-3) 0 var(--s-4); }
+.crop[hidden] { display: none; }
+
+/* The frame is square and the RING is what makes it read as circular. Masking the picture
+   to a circle instead would hide the parts being cropped away, and seeing what you are
+   about to lose is most of what makes a crop tool usable. */
+.crop-frame {
+    position: relative;
+    width: 220px;
+    height: 220px;
+    margin: 0 auto;
+    overflow: hidden;
+    border-radius: var(--r-2);
+    background: var(--surface-1);
+    cursor: grab;
+    touch-action: none;
+    user-select: none;
+}
+.crop-frame.dragging { cursor: grabbing; }
+.crop-image {
+    position: absolute;
+    top: 0; left: 0;
+    transform-origin: 0 0;
+    /* The picture is positioned in script, and dragging it as an image is not what the
+       gesture means here. */
+    pointer-events: none;
+    -webkit-user-drag: none;
+}
+/* A shade over everything outside the circle, drawn as one enormous shadow so there is no
+   second element to keep in sync with the frame's size. */
+.crop-ring {
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    box-shadow: 0 0 0 9999px rgb(var(--pill-rgb) / 0.62);
+    border: 2px solid var(--accent-hi);
+    pointer-events: none;
+}
+.crop-zoom {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    margin: var(--s-3) auto 0;
+    max-width: 220px;
+    font-size: var(--t-sm);
+    color: var(--ink-faint);
+}
+.crop-zoom input { flex: 1; min-width: 0; }
+.crop-hint { margin: var(--s-2) 0 0; text-align: center; font-size: var(--t-sm); color: var(--ink-faint); }
+.crop-error { margin: var(--s-2) 0 0; text-align: center; font-size: var(--t-sm); color: var(--bad); }
+.crop-actions { display: flex; justify-content: center; gap: var(--s-2); margin-top: var(--s-3); }
+
+/* ── The self menu ────────────────────────────────────────────────────────── */
+
+/* Status and Settings, behind your own name. Absolute within the bar rather than fixed:
+   the bar is the last thing in the sidebar and never scrolls, so there is nothing to
+   escape from — and staying inside it means the menu moves with the bar on a resize. */
+.self-menu {
+    position: absolute;
+    left: var(--s-3);
+    right: var(--s-3);
+    bottom: calc(100% - var(--s-2));
+    padding: var(--s-2);
+    background: var(--surface-4);
+    border: 1px solid var(--line);
+    border-radius: var(--r-3);
+    box-shadow: var(--shadow-2);
+    z-index: var(--z-menu);
+    animation: pop-in var(--dur-fast) var(--ease);
+}
+.self-menu[hidden] { display: none; }
+.self-menu-head { margin: 0; padding: var(--s-1) var(--s-2) var(--s-2); min-width: 0; }
+.self-menu-name { display: block; font-weight: 640; color: var(--ink); }
+.self-menu-handle { display: block; font-size: var(--t-xs); color: var(--ink-faint); }
+.self-menu-split { height: 1px; margin: var(--s-1) var(--s-2); background: var(--line-soft); }
+/* A flex row rather than a grid. The grid version had the tick and the label both placed
+   in column 2, so they collided and the label was pushed onto its own line under the dot —
+   which is what a hand-placed grid item does the moment a row gains a third thing. Here the
+   dot, the text and the tick are simply three items in a row, and the text block stacks its
+   own two lines. Same shape as .setting-text elsewhere in this file. */
+.self-menu-item {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    width: 100%;
+    padding: var(--s-2) var(--s-2);
+    border-radius: var(--r-2);
+    text-align: left;
+    color: var(--ink-dim);
+}
+.self-menu-item:hover, .self-menu-item:focus-visible { background: var(--surface-2); color: var(--ink); }
+.self-menu-item.current { color: var(--ink); }
+/* The tick, drawn rather than shipped as an icon: it is one glyph and it only ever means
+   "this is the one you are on". Last in the row, so it needs no placement at all. */
+.self-menu-item.current::after {
+    content: "\2713";
+    margin-left: auto;
+    color: var(--accent-hi);
+    font-size: var(--t-sm);
+}
+.self-menu-item svg { width: 15px; height: 15px; flex: none; }
+.self-menu-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.self-menu-label { font-size: var(--t-base); line-height: 1.25; }
+.self-menu-hint {
+    font-size: var(--t-xs);
+    line-height: 1.25;
+    color: var(--ink-ghost);
+    /* One line. A wrapped hint makes the two status rows different heights, which reads as
+       a layout bug rather than as one of them having more to say. */
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* The same dot the avatar wears, as a standalone element for the menu rows. Driven by the
+   same data-presence attribute so a colour is never defined twice. */
+.status-dot {
+    width: 10px;
+    height: 10px;
+    flex: none;
+    border-radius: 50%;
+    background: var(--presence-off);
+    flex: none;
+}
+.status-dot[data-presence="live"], .status-dot[data-presence="online"] { background: var(--presence-live); }
+.status-dot[data-presence="idle"], .status-dot[data-presence="away"] { background: var(--presence-idle); }
+.status-dot[data-presence="dnd"] { background: var(--presence-busy); }
+
+/* ── Self bar ─────────────────────────────────────────────────────────────── */
+
+/* Identity above, controls below, a quiet three-quarter rule between them: the bar is
+   the room's cockpit now that camera and screen live here too. */
+.self-bar {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--s-1);
+    padding: var(--s-2) var(--s-3) var(--s-3);
+    background: var(--surface-0);
+    border-top: 1px solid var(--line-soft);
+}
+.self-rule {
+    width: 75%;
+    height: 1px;
+    background: linear-gradient(90deg, var(--line-strong), rgb(var(--sep-rgb) / 0));
+    margin: 0 0 var(--s-1) var(--s-1);
+}
+.self-actions .media-btn.on { background: var(--accent-tint-hi); color: var(--accent-hi); }
+.self-id {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    flex: 1;
+    min-width: 0;
+    padding: var(--s-1);
+    border-radius: var(--r-2);
+    text-align: left;
+}
+.self-id:hover { background: var(--surface-2); }
+/* A column, so the name and the room stack — and so each is a block an ellipsis can apply
+   to. As two inline spans they ran together into one line that was simply cut off. */
+.self-text { min-width: 0; display: flex; flex-direction: column; }
+.self-name {
+    font-size: var(--t-base);
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.self-state {
+    font-size: var(--t-xs);
+    color: var(--ink-faint);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.self-actions { display: flex; gap: var(--s-2); flex: none; justify-content: flex-start; padding-left: var(--s-1); }
+.round-btn {
+    display: grid;
+    place-items: center;
+    width: 32px; height: 32px;
+    border-radius: 50%;
+    background: var(--surface-3);
+    color: var(--ink-dim);
+    transition: background var(--dur-fast), color var(--dur-fast);
+}
+.round-btn:hover { background: var(--surface-4); color: var(--ink); }
+.round-btn svg { width: 16px; height: 16px; }
+.round-btn.on { background: rgb(var(--bad-rgb) / 0.2); color: var(--bad); }
+.round-btn.on:hover { background: rgb(var(--bad-rgb) / 0.3); }
+.round-btn.leave:hover { background: rgb(var(--bad-rgb) / 0.2); color: var(--bad); }
+
+/* ── Room column ──────────────────────────────────────────────────────────── */
+
+.room {
+    position: relative;
+    display: grid;
+    /* Every child is PINNED to its row. With auto-placement, a display:none stage slot
+       shifted the timeline into an auto row (it grew to content height and pushed the
+       composer off the bottom of the window) and a live stage pushed the composer into
+       an implicit overlapping row. fit-content caps the stage so the text keeps at
+       least its promised share of the page. */
+    grid-template-rows: auto fit-content(62%) minmax(0, 1fr) auto auto;
+    /* Stated, not left implicit. An implicit column is `auto`, which grows to the widest
+       unbreakable thing in it — the room header's one-line topic — so below about 860px the
+       header, timeline and composer were all wider than the panel holding them, and the
+       right-hand side of every message was simply cut off. */
+    grid-template-columns: minmax(0, 1fr);
+    background:
+        var(--noise),
+        radial-gradient(900px 480px at 50% -10%, rgb(var(--accent-rgb) / 0.05) 0%, transparent 70%),
+        var(--bg-app);
+    border: 1px solid var(--line-soft);
+    border-radius: var(--r-4);
+    overflow: hidden;
+    /* Makes this column its own stacking context, which is the whole reason the living
+       background is visible at all. `position: relative` with z-index:auto does NOT form
+       one, so .room-bg's --z-below put it in the ROOT context — painted before .room's
+       own opaque background went down on top of it. The canvas was drawing every frame,
+       perfectly, behind a wall. Removing this line hides it again. */
+    isolation: isolate;
+}
+
+/* The living background. Sits behind everything in this column; the message gutter is
+   transparent so the strands show through it. */
+.room-bg {
+    position: absolute;
+    inset: 0;
+    width: 100%; height: 100%;
+    z-index: var(--z-below);
+    pointer-events: none;
+    display: block;
+}
+.room > .room-head,
+.room > .timeline,
+.room > .composer-wrap { position: relative; z-index: var(--z-base); }
+.room > .room-head { grid-row: 1; }
+/* The slot is itself a grid: the stage takes the leftover and the divider keeps its
+   own row. Without this the stage's 100% height pushed the divider OUT of the row,
+   where the timeline painted over it and ate every drag. */
+.room > #stageSlot {
+    grid-row: 2;
+    min-height: 0;
+    display: grid;
+    grid-template-rows: minmax(0, 1fr) auto;
+    position: relative;
+    z-index: var(--z-base);
+}
+/* Column as well as row: the bubbles layer shares this cell, and an item pinned only by row
+   is auto-placed into a new column when another already holds the spot. */
+.room > .timeline { grid-row: 3; grid-column: 1; }
+.room > .voice-notice-slot { grid-row: 4; }
+.room > .composer-wrap { grid-row: 5; }
+
+.room-head {
+    display: flex;
+    align-items: center;
+    gap: var(--s-3);
+    padding: var(--s-4) var(--s-5);
+    border-bottom: 1px solid var(--line-soft);
+}
+.room-head svg { width: 19px; height: 19px; color: var(--ink-dim); flex: none; }
+.room-icon { display: grid; place-items: center; flex: none; }
+.room-icon .room-hash { width: auto; font-size: var(--t-xl); }
+.room-head h1 {
+    margin: 0;
+    font-size: var(--t-lg);
+    font-weight: 620;
+    letter-spacing: -0.015em;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.room-head-spacer { flex: 1; }
+.room-topic {
+    color: var(--ink-faint);
+    font-size: var(--t-base);
+    padding-left: var(--s-3);
+    border-left: 1px solid var(--line);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* ── The stage ────────────────────────────────────────────────────────────── */
+
+/* Video above, chat below, always both: a stream does not replace the room. */
+#stageSlot:empty { display: none; }
+/* Scoped under .room on purpose: auth.css also names a `.stage` (the sign-in page's
+   centre field). Each previous attempt to share the name cost one screen its layout —
+   the room's video stage stole the login card's centring, and the login field's
+   place-items:center stacked the video layers. Scoping ends the argument. */
+.room .stage {
+    /* Breathing room on every side; the divider row below completes the frame. */
+    padding: var(--s-3) var(--s-4) var(--s-2);
+    overflow: hidden;
+    display: grid;
+    gap: var(--s-2);
+    min-height: 0;
+    /* Declared, not assumed: auth.css also has a `.stage` (the sign-in page's centre
+       field) whose place-items:center leaks in here and centres the video layers on
+       top of each other. The design bundle patched this inline; the stylesheet is
+       where it belongs. */
+    place-items: stretch;
+    /* The design's opening split: 55% of the window to video, floor of 280px. The
+       divider's inline height wins the moment the hand moves it. */
+    height: max(280px, calc((100dvh - 190px) * 0.55));
+}
+.room .stage.has-focus { grid-template-rows: minmax(0, 1fr) auto; }
+
+/* Nothing watched = nothing claimed: the zone is a compact INDICATION row of
+   thumbnail-scale tiles, exactly the size the carousel uses. The 55% split, the
+   divider and the drag exist only while a stream actually holds the big frame. */
+.room .stage:not(.has-focus) {
+    height: auto;
+    grid-template-rows: auto;
+}
+.room .stage:not(.has-focus) .stage-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--s-2);
+    align-items: flex-start;
+}
+.room .stage:not(.has-focus) .stage-grid .tile { width: 172px; flex: none; }
+.room .stage:not(.has-focus) .ph-face { width: 38px; height: 38px; font-size: var(--t-sm); }
+.room .stage:not(.has-focus) .ph-screen svg { width: 20px; height: 20px; }
+.room .stage:not(.has-focus) .watch-btn { padding: var(--s-1) var(--s-3); font-size: var(--t-xs); }
+.room .stage:not(.has-focus) .watch-btn svg { width: 11px; height: 11px; }
+
+.stage-grid {
+    display: grid;
+    gap: var(--s-2);
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    grid-auto-rows: minmax(0, 1fr);
+    align-items: center;
+    /* Centred, not stretched: when the row is shorter than the tile's 16:9 wants, the
+       aspect ratio caps the WIDTH too, and a stretch-aligned capped tile pins to the
+       left of its cell. Centre is what a lone share frame should do. */
+    justify-items: center;
+    min-height: 0;
+}
+/* Inside a capped row the aspect ratio yields rather than overflowing the chat. */
+.stage-grid .tile { max-height: 100%; }
+.stage-grid[data-count="1"] { grid-template-columns: minmax(0, 1fr); }
+
+.stage-main { min-height: 0; display: grid; }
+
+/* Several watched streams share the big area side by side. Columns by count rather than
+   auto-fit: the area's HEIGHT is fixed by the split, so auto-fit would happily wrap three
+   tiles into a column of slivers. Each cell is filled and the picture letterboxed inside
+   it (object-fit: contain on the video), so nothing is cropped whatever the shapes. */
+.watch-grid {
+    display: grid;
+    gap: var(--s-2);
+    min-height: 0;
+    grid-template-columns: minmax(0, 1fr);
+    grid-auto-rows: minmax(0, 1fr);
+}
+.watch-grid[data-count="2"],
+.watch-grid[data-count="3"],
+.watch-grid[data-count="4"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.watch-grid[data-count="5"],
+.watch-grid[data-count="6"],
+.watch-grid[data-count="7"],
+.watch-grid[data-count="8"],
+.watch-grid[data-count="9"] { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+/* Half a stage is too narrow for the pill's words; the icons and titles carry it. */
+.watch-grid:not([data-count="1"]) .pill-word,
+.watch-grid:not([data-count="1"]) .pill-report-label,
+.watch-grid:not([data-count="1"]) .pill-report span { display: none; }
+.watch-grid:not([data-count="1"]) .pill-volume { width: 64px; }
+/* A watched stream playing in the strip beside the spotlight: marked as yours, click to swap. */
+.stage-strip .tile.watched { border-color: rgb(var(--accent-rgb) / 0.45); }
+.stage-strip {
+    display: flex;
+    gap: var(--s-2);
+    overflow-x: auto;
+    padding-bottom: var(--s-1);
+}
+.stage-strip .tile { width: 172px; flex: none; }
+
+.tile {
+    position: relative;
+    aspect-ratio: 16 / 9;
+    min-height: 0;
+    border-radius: var(--r-3);
+    overflow: hidden;
+    background: var(--surface-0);
+    border: 1px solid var(--line-soft);
+    cursor: pointer;
+    transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+}
+.tile:hover { border-color: var(--line-strong); }
+.tile.focused { border-color: rgb(var(--accent-rgb) / 0.6); box-shadow: var(--shadow-2); }
+/* The big window reads, it does not click: no zoom cursor, no toggle. */
+.stage-main .tile { aspect-ratio: auto; height: 100%; cursor: default; }
+.tile video { width: 100%; height: 100%; object-fit: contain; background: var(--video-backdrop); display: block; }
+/* A mirror for your own face only — everyone else must read your screen's text. */
+.tile.self video { transform: scaleX(-1); }
+.tile.self[data-tile$=":screen"] video { transform: none; }
+
+/* The tile's control bar: invisible until the pointer arrives, and it LINGERS —
+   the fade waits three seconds after the pointer leaves, so reaching for the volume
+   never becomes a race. Pure CSS: the delay lives on the resting state's transition
+   and is zeroed while hovered. */
+.tile-bar {
+    position: absolute;
+    left: 0; right: 0; bottom: 0;
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    padding: var(--s-5) var(--s-3) var(--s-2);
+    background: linear-gradient(180deg, transparent, var(--scrim) 78%);
+    opacity: 0;
+    transition: opacity var(--dur) var(--ease) 3s;
+}
+.tile:hover .tile-bar,
+.tile-bar:focus-within { opacity: 1; transition-delay: 0s; }
+.tile-bar-spacer { flex: 1; }
+
+.tile-label {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--s-1);
+    color: var(--on-accent);
+    font-size: var(--t-xs);
+    font-weight: 600;
+    min-width: 0;
+    max-width: 55%;
+}
+.tile-label svg { width: 12px; height: 12px; flex: none; }
+.tile-label span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.tile-tool {
+    display: grid;
+    place-items: center;
+    width: 28px; height: 28px;
+    border-radius: var(--r-1);
+    color: var(--on-accent);
+    flex: none;
+}
+.tile-tool:hover { background: rgb(var(--accent-rgb) / 0.35); }
+.tile-tool svg { width: 15px; height: 15px; }
+
+/* The focused stream's floating pill — the design's centre-bottom control. Same linger
+   as the tile bar: appears on hover, fades three seconds after the pointer leaves. */
+.stream-pill {
+    position: absolute;
+    left: 50%;
+    bottom: 14px;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 5px 7px;
+    border-radius: var(--r-pill);
+    background: rgb(var(--pill-rgb) / 0.85);
+    border: 1px solid var(--line-strong);
+    box-shadow: var(--shadow-2);
+    backdrop-filter: blur(10px);
+    white-space: nowrap;
+    opacity: 0;
+    transition: opacity var(--dur) var(--ease) 3s;
+}
+.tile:hover .stream-pill,
+.stream-pill:focus-within { opacity: 1; transition-delay: 0s; }
+.pill-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 32px;
+    height: 32px;
+    padding: 0 var(--s-2);
+    border-radius: var(--r-pill);
+    color: var(--on-accent);
+    font-size: var(--t-sm);
+    font-weight: 600;
+}
+.pill-btn:hover { background: rgb(var(--accent-rgb) / 0.35); }
+.pill-btn svg { width: 16px; height: 16px; }
+.pill-stop { gap: 7px; padding: 0 12px; }
+.pill-stop:hover { background: rgb(var(--bad-rgb) / 0.28); }
+/* The stream-quality report pair: a thumb and a word, like Stop watching. Good leans on the
+   accent, Bad on the warning colour, so the two read at a glance without a legend. */
+.pill-report-label { display: inline-flex; align-items: center; padding: 0 2px 0 6px; color: var(--on-accent); font-size: var(--t-sm); font-weight: 600; opacity: 0.75; white-space: nowrap; }
+.pill-report { gap: 6px; padding: 0 10px; }
+.pill-report.good:hover { background: rgb(var(--accent-rgb) / 0.32); }
+.pill-report.bad:hover { background: rgb(var(--bad-rgb) / 0.28); }
+.pill-report[disabled] { opacity: 0.55; cursor: default; }
+.pill-report[disabled]:hover { background: none; }
+.pill-volume { width: 88px; accent-color: var(--accent); margin: 0 var(--s-2) 0 2px; }
+.pill-sep { width: 1px; height: 18px; background: rgb(var(--sep-rgb) / 0.14); margin: 0 3px; flex: none; }
+
+/* LIVE, said the way the design says it. */
+.live-badge {
+    position: absolute;
+    top: 10px; left: 12px;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 4px 10px;
+    border-radius: var(--r-pill);
+    background: var(--scrim);
+    border: 1px solid rgb(var(--bad-rgb) / 0.35);
+    color: var(--bad-text);
+    font-size: var(--t-xs);
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    backdrop-filter: blur(6px);
+    white-space: nowrap;
+    max-width: calc(100% - 24px);
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.live-badge i { width: 6px; height: 6px; border-radius: 50%; background: var(--bad); flex: none; }
+.live-badge.small { top: 8px; left: 8px; padding: 2px 8px; font-size: 10px; }
+
+/* The thumbnail's identity chip: who, and what kind of picture. */
+.tile-chip {
+    position: absolute;
+    left: 6px; bottom: 6px;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 2px 8px 2px 3px;
+    border-radius: var(--r-pill);
+    background: var(--scrim);
+    border: 1px solid rgb(var(--sep-rgb) / 0.08);
+    color: var(--on-accent);
+    font-size: var(--t-xs);
+    font-weight: 600;
+    backdrop-filter: blur(6px);
+    max-width: calc(100% - 12px);
+}
+.tile-chip svg { width: 11px; height: 11px; color: var(--accent-hi); flex: none; }
+.tile-chip > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tile-chip-face {
+    width: 16px; height: 16px;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    background: var(--av, var(--surface-3));
+    color: var(--on-accent);
+    font-weight: 700;
+    font-size: 8px;
+    flex: none;
+}
+
+/* Grid tiles invite the click. */
+.watch-cue {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--on-accent);
+    font-size: var(--t-xs);
+    font-weight: 600;
+}
+.watch-cue svg { width: 13px; height: 13px; }
+
+/* The hand on the split: drag to trade stream for chat. */
+.stage-divider {
+    display: grid;
+    place-items: center;
+    height: 14px;
+    margin: 2px var(--s-4) 0;
+    cursor: row-resize;
+    touch-action: none;
+}
+.stage-divider span {
+    width: 56px;
+    height: 4px;
+    border-radius: var(--r-pill);
+    background: var(--line-strong);
+    transition: background var(--dur-fast) var(--ease);
+}
+.stage-divider:hover span { background: var(--accent); }
+
+/* A watchable mark is a small door, and it looks pressable. */
+.mark-watch { cursor: pointer; border-radius: var(--r-1); padding: 1px; }
+.mark-watch:hover { background: var(--accent-tint-hi); color: var(--accent-hi); }
+
+/* Fullscreen strips the chrome and keeps the picture. */
+.tile:fullscreen { border: 0; border-radius: 0; box-shadow: none; transition: none; }
+.tile:fullscreen video { object-fit: contain; }
+
+/* NO BLUR OVER A FULLSCREEN VIDEO.
+ *
+ * This is the whole reason a shared screen stuttered full-window while the very same stream
+ * was smooth as a thumbnail. The badge and the pill both sit INSIDE the tile, and both ask
+ * for backdrop-filter — and a backdrop-filter descendant forces the browser to copy each
+ * decoded video frame into a surface and blur it, instead of handing the frame to the
+ * compositor as an overlay. At 172px that costs nothing. At 1440p or 4K, sixty times a
+ * second, it is the difference between smooth and broken.
+ *
+ * The pill is the worse of the two: it is hidden by opacity until .tile:hover, and in
+ * fullscreen the pointer is inside the tile by definition, so it is permanently visible.
+ *
+ * Both stay on screen. They simply stop being made of blurred video. */
+.tile:fullscreen .live-badge,
+.tile:fullscreen .stream-pill,
+.tile:fullscreen .tile-chip {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+}
+
+/* The header buttons while sending: lit, and honest about what a second press does. */
+.media-btn[aria-pressed="true"] {
+    color: var(--accent-hi);
+    border-color: rgb(var(--accent-rgb) / 0.55);
+    background: var(--accent-tint);
+}
+
+/* ── Incoming calls ───────────────────────────────────────────────────────── */
+
+.ring-card { padding: var(--s-7); text-align: center; min-width: 300px; }
+.ring-name { margin: 0; font-size: var(--t-2xl); font-weight: 650; letter-spacing: -0.02em; }
+.ring-sub { margin: var(--s-1) 0 var(--s-6); color: var(--ink-dim); }
+.ring-actions { display: flex; gap: var(--s-3); justify-content: center; }
+.ring-modal { animation: ring-pulse 1.6s ease-in-out infinite; }
+@keyframes ring-pulse {
+    0%, 100% { box-shadow: var(--shadow-3); }
+    50% { box-shadow: var(--shadow-3), 0 0 0 6px rgb(var(--accent-rgb) / 0.18); }
+}
+
+.danger-btn:hover { color: var(--bad); border-color: var(--bad); }
+
+/* ── The share picker ─────────────────────────────────────────────────────── */
+
+.share-picker { width: min(680px, 92vw); max-height: 82vh; overflow-y: auto; padding: var(--s-6); }
+.share-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: var(--s-3);
+}
+.share-source {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-1);
+    padding: var(--s-2);
+    border: 1px solid var(--line);
+    border-radius: var(--r-3);
+    background: var(--surface-2);
+    text-align: left;
+    transition: border-color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+}
+.share-source:hover { border-color: var(--accent); transform: translateY(-1px); }
+.share-source img {
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    object-fit: cover;
+    border-radius: var(--r-2);
+    background: var(--video-backdrop);
+}
+.share-name {
+    font-size: var(--t-sm);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.share-audio { margin-top: var(--s-5); }
+
+/* How to share: the same radio cards as the room browser's kind picker (.kind-card), laid out
+   for this dialog. Narrower than the picker it precedes, because it is two short questions,
+   not a gallery of thumbnails. */
+.share-setup { width: min(520px, 92vw); display: flex; flex-direction: column; }
+.share-setup .panel-section { margin-top: var(--s-5); }
+.share-setup .browser-head + .panel-section { margin-top: var(--s-2); }
+.share-option { padding: var(--s-3) var(--s-4); }
+.share-setup-actions { margin-top: var(--s-6); }
+
+/* ── Timeline ─────────────────────────────────────────────────────────────── */
+
+.timeline {
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: var(--s-5) 0 var(--s-3);
+}
+/* Full width. There was a --reading-max cap here on typographic grounds; on a wide
+   window it read as text refusing to use the room it was given, and it went. */
+.timeline-inner {
+    padding: 0 var(--s-5);
+}
+
+.day-sep {
+    display: flex;
+    align-items: center;
+    gap: var(--s-4);
+    margin: var(--s-5) 0 var(--s-4);
+    color: var(--ink-faint);
+    font-size: var(--t-xs);
+    font-weight: 700;
+    letter-spacing: 0.09em;
+}
+.day-sep::before, .day-sep::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--line-soft);
+}
+
+.msg-list { list-style: none; margin: 0; padding: 0; }
+
+.msg {
+    display: grid;
+    grid-template-columns: var(--avatar-lg) minmax(0, 1fr);
+    gap: var(--s-3);
+    padding: var(--s-2) var(--s-3);
+    margin: 0 calc(var(--s-3) * -1);
+    border-radius: var(--r-2);
+    border-left: 3px solid transparent;
+}
+.msg:hover { background: rgb(var(--accent-rgb) / 0.04); }
+
+/* The same person again within a few minutes: no face, no name, a tighter row, and the
+   time tucked into the gutter where the face would be — visible only on hover, so a
+   burst of short lines reads as one turn instead of a column of identical headers. */
+.msg.continued { padding-top: 1px; padding-bottom: 1px; }
+.msg-gutter-time {
+    align-self: center;
+    text-align: center;
+    font-size: var(--t-xs);
+    color: var(--ink-faint);
+    font-variant-numeric: tabular-nums;
+    opacity: 0;
+    transition: opacity var(--dur-fast) var(--ease);
+}
+.msg.continued:hover .msg-gutter-time { opacity: 1; }
+
+/* A message that names you. The row tint plus an edge marker, because colour alone is
+   not a signal everyone can see. */
+.msg.mentions-me {
+    background: rgb(var(--gold-rgb) / 0.07);
+    border-left-color: var(--gold);
+}
+.msg.mentions-me:hover { background: rgb(var(--gold-rgb) / 0.11); }
+
+.msg-head {
+    display: flex;
+    align-items: baseline;
+    gap: var(--s-2);
+    flex-wrap: wrap;
+}
+.msg-author { font-weight: 640; letter-spacing: -0.01em; color: var(--author, var(--ink)); }
+.msg-time { font-size: var(--t-xs); color: var(--ink-faint); font-variant-numeric: tabular-nums; }
+.msg-body { overflow-wrap: anywhere; }
+.msg-body .mention {
+    background: rgb(var(--accent-rgb) / 0.2);
+    color: var(--accent-hi);
+    border-radius: var(--r-1);
+    padding: 0 4px;
+    font-weight: 550;
+}
+
+.badge {
+    font-size: var(--t-xs);
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    padding: 2px 6px;
+    border-radius: var(--r-1);
+    background: var(--surface-3);
+    color: var(--ink-dim);
+    text-transform: uppercase;
+}
+.badge.admin { background: rgb(var(--gold-rgb) / 0.18); color: var(--gold); }
+.badge.tester { background: rgb(var(--accent-rgb) / 0.18); color: var(--accent); }
+
+/* ── System events ────────────────────────────────────────────────────────── */
+
+.msg-system {
+    display: flex;
+    align-items: center;
+    gap: var(--s-3);
+    padding: var(--s-1) var(--s-3);
+    color: var(--ink-faint);
+    font-size: var(--t-base);
+}
+.msg-system svg { width: 16px; height: 16px; flex: none; color: var(--ink-ghost); }
+.msg-system .sys-text { flex: 1; min-width: 0; }
+.msg-system .sys-who { color: var(--ink-dim); font-weight: 550; }
+
+/* ── Reactions ────────────────────────────────────────────────────────────── */
+
+.reactions { display: flex; gap: var(--s-2); flex-wrap: wrap; margin-top: var(--s-2); align-items: center; }
+.reaction {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--s-1);
+    padding: 3px var(--s-2);
+    border-radius: var(--r-pill);
+    background: var(--surface-2);
+    border: 1px solid var(--line-soft);
+    font-size: var(--t-sm);
+    color: var(--ink-dim);
+    font-variant-numeric: tabular-nums;
+}
+/* The icon-set rule: size ALWAYS comes from CSS. Without this the smiley rendered as
+   an unsized blot — the reported "black dot". */
+.reaction svg { width: 15px; height: 15px; flex: none; }
+.reaction:hover { border-color: var(--line-strong); }
+.reaction.mine { background: var(--accent-tint); border-color: rgb(var(--accent-rgb) / 0.45); color: var(--accent-hi); }
+/* The add button: a quiet smiley that wakes when the message is under the pointer. */
+.reaction.add {
+    color: var(--ink-faint);
+    padding: 3px var(--s-2);
+    opacity: 0.4;
+    transition: opacity var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.msg:hover .reaction.add,
+.reaction.add:focus-visible { opacity: 1; color: var(--ink-dim); }
+.reaction.add:hover { color: var(--accent-hi); border-color: rgb(var(--accent-rgb) / 0.45); }
+
+/* The emoji palette: floats ABOVE the message on the popover layer — it borrows no
+   space from the timeline, so opening it never shifts a single line of chat. */
+.msg { position: relative; }
+.react-pick {
+    position: absolute;
+    z-index: var(--z-popover);
+    display: flex;
+    gap: 2px;
+    padding: var(--s-1);
+    background: var(--surface-2);
+    border: 1px solid var(--line-strong);
+    border-radius: var(--r-pill);
+    box-shadow: var(--shadow-2);
+    backdrop-filter: blur(8px);
+    white-space: nowrap;
+}
+.react-pick button {
+    width: 34px;
+    height: 34px;
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+    font-size: 18px;
+    line-height: 1;
+    transition: transform var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+.react-pick button:hover { background: var(--accent-tint-hi); transform: scale(1.15); }
+
+/* ── Attachments and previews ─────────────────────────────────────────────── */
+
+.link-preview {
+    display: flex;
+    gap: var(--s-3);
+    align-items: flex-start;
+    margin-top: var(--s-2);
+    padding: var(--s-3);
+    max-width: 620px;
+    background: var(--surface-2);
+    border: 1px solid var(--line-soft);
+    border-left: 3px solid var(--accent);
+    border-radius: var(--r-2);
+}
+.preview-icon {
+    display: grid;
+    place-items: center;
+    width: 38px; height: 38px;
+    border-radius: var(--r-2);
+    background: var(--surface-3);
+    color: var(--ink-dim);
+    flex: none;
+}
+.preview-icon svg { width: 19px; height: 19px; }
+.preview-body { min-width: 0; }
+.preview-site { font-size: var(--t-xs); color: var(--ink-faint); }
+.preview-title { font-weight: 600; color: var(--accent-hi); margin: 2px 0; }
+.preview-desc { font-size: var(--t-base); color: var(--ink-dim); }
+
+/* The wrap exists for the dismiss button, which cannot live inside the link. It is as wide
+   as the card and no wider, so the button sits on the card's corner. */
+.link-preview-wrap { position: relative; max-width: 620px; }
+/* Room for the button, so it never sits on top of the title. */
+.link-preview-wrap .link-preview { padding-right: calc(var(--s-3) + 26px); }
+.preview-dismiss {
+    position: absolute;
+    top: calc(var(--s-2) + var(--s-1));
+    right: var(--s-1);
+    width: 22px;
+    height: 22px;
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+    font-size: var(--t-xs);
+    color: var(--ink-faint);
+    opacity: 0;
+    transition: opacity var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.msg:hover .preview-dismiss,
+.preview-dismiss:focus-visible { opacity: 1; }
+.preview-dismiss:hover { color: var(--ink); background: var(--surface-3); }
+
+.attachment {
+    display: flex;
+    align-items: center;
+    gap: var(--s-3);
+    margin-top: var(--s-2);
+    padding: var(--s-2) var(--s-3);
+    max-width: 380px;
+    background: var(--surface-2);
+    border: 1px solid var(--line-soft);
+    border-radius: var(--r-2);
+}
+.attach-body { flex: 1; min-width: 0; }
+.attach-name {
+    font-weight: 550;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.attach-meta { font-size: var(--t-xs); color: var(--ink-faint); }
+
+/* ── Typing ───────────────────────────────────────────────────────────────── */
+
+.typing {
+    display: flex;
+    align-items: center;
+    gap: var(--s-3);
+    padding: var(--s-2) var(--s-3);
+    color: var(--ink-faint);
+    font-size: var(--t-base);
+    min-height: 30px;
+}
+.typing-dots { display: inline-flex; gap: 3px; }
+.typing-dots i {
+    width: 5px; height: 5px;
+    border-radius: 50%;
+    background: var(--ink-faint);
+    animation: typing-bounce 1.25s infinite var(--ease);
+}
+.typing-dots i:nth-child(2) { animation-delay: 0.16s; }
+.typing-dots i:nth-child(3) { animation-delay: 0.32s; }
+@keyframes typing-bounce {
+    0%, 60%, 100% { opacity: 0.32; transform: translateY(0); }
+    30% { opacity: 1; transform: translateY(-3px); }
+}
+
+/* ── Composer ─────────────────────────────────────────────────────────────── */
+
+.composer-wrap { position: relative; padding: 0 var(--s-5) var(--s-5); }
+
+/* ── Mention autocomplete ─────────────────────────────────────────────────── */
+
+.mention-pop {
+    position: absolute;
+    left: var(--s-5);
+    right: var(--s-5);
+    bottom: calc(100% + var(--s-1));
+    max-width: 420px;
+    max-height: 264px;
+    overflow-y: auto;
+    padding: var(--s-1);
+    background: var(--surface-4);
+    border: 1px solid var(--line);
+    border-radius: var(--r-3);
+    box-shadow: var(--shadow-2);
+    z-index: var(--z-popover);
+    animation: pop-in var(--dur-fast) var(--ease);
+}
+@keyframes pop-in {
+    from { opacity: 0; transform: translateY(3px); }
+    to { opacity: 1; transform: none; }
+}
+.mention-row {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    width: 100%;
+    padding: var(--s-1) var(--s-2);
+    border-radius: var(--r-2);
+    text-align: left;
+}
+.mention-row:hover, .mention-row.current { background: var(--accent-tint-hi); }
+.mention-name { font-weight: 550; }
+.mention-user { color: var(--ink-faint); font-size: var(--t-sm); }
+.composer {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    padding: var(--s-2);
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    border-radius: var(--r-4);
+    transition: border-color var(--dur-fast);
+}
+.composer:focus-within { border-color: var(--accent); }
+.composer-input {
+    flex: 1;
+    min-width: 0;
+    background: none;
+    border: 0;
+    padding: var(--s-2) var(--s-1);
+    font-size: var(--t-md);
+    resize: none;
+}
+.composer-input:focus-visible { outline-offset: -3px; }
+.composer-input::placeholder { color: var(--ink-ghost); }
+
+.composer-btn {
+    display: grid;
+    place-items: center;
+    width: 34px; height: 34px;
+    border-radius: 50%;
+    color: var(--ink-dim);
+    flex: none;
+    font-size: var(--t-sm);
+    font-weight: 700;
+}
+.composer-btn:hover { background: var(--surface-3); color: var(--ink); }
+.composer-btn svg { width: 18px; height: 18px; }
+.composer-btn.send {
+    background: linear-gradient(180deg, var(--accent-hi), var(--accent));
+    color: var(--on-accent);
+    box-shadow: var(--shadow-accent);
+}
+.composer-btn.send:hover { filter: brightness(1.08); background: linear-gradient(180deg, var(--accent-hi), var(--accent)); }
+
+/* ── Avatars ──────────────────────────────────────────────────────────────── */
+
+.avatar {
+    position: relative;
+    display: grid;
+    place-items: center;
+    width: var(--avatar); height: var(--avatar);
+    border-radius: 50%;
+    background: var(--av, var(--surface-3));
+    color: var(--on-accent);
+    font-size: var(--t-sm);
+    font-weight: 700;
+    flex: none;
+    user-select: none;
+}
+/* Laid over the initials rather than instead of them: the circle is already the right
+   size and colour, so a face arriving costs no reflow and a missing one is not a hole. */
+.avatar-face {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    border-radius: 50%;
+}
+.avatar.sm { width: var(--avatar-sm); height: var(--avatar-sm); font-size: var(--t-xs); }
+.avatar.lg { width: var(--avatar-lg); height: var(--avatar-lg); font-size: var(--t-base); }
+
+/* The presence dot is punched out of the avatar rather than sitting on top of it, so it
+   reads at every size and never fights the image behind it. */
+.avatar[data-presence]::after {
+    content: "";
+    position: absolute;
+    right: -1px; bottom: -1px;
+    width: 11px; height: 11px;
+    border-radius: 50%;
+    border: 2.5px solid var(--surface-1);
+    background: var(--presence-off);
+}
+.avatar[data-presence="live"]::after,
+.avatar[data-presence="online"]::after { background: var(--presence-live); }
+.avatar[data-presence="idle"]::after,
+.avatar[data-presence="away"]::after { background: var(--presence-idle); }
+.avatar[data-presence="dnd"]::after { background: var(--presence-busy); }
+.avatar[data-presence="offline"]::after { background: var(--presence-off); }
+.avatar.sm[data-presence]::after { width: 9px; height: 9px; border-width: 2px; }
+
+/* Avatars on the darker columns need their ring to match what is behind them. */
+.rail .avatar[data-presence]::after { border-color: var(--bg-void); }
+.self-bar .avatar[data-presence]::after { border-color: var(--surface-0); }
+
+/* ── Narrower windows ─────────────────────────────────────────────────────── */
+
+/* Columns are dropped rather than squeezed — a 140px member list is not a member list —
+ * but every dropped column stays REACHABLE as an overlay. The earlier version simply
+ * removed them, which below 860px left no way to switch rooms, open settings or sign
+ * out: a trap, not a layout. */
+
+.drawer-toggle { display: none; }
+.drawer-scrim { display: none; }
+
+@media (max-width: 860px) {
+    .app-body { grid-template-columns: var(--rail-w) minmax(0, 1fr); }
+    .sidebar { display: none; }
+    .titlebar-word { display: none; }
+    .drawer-toggle { display: grid; }
+    /* The room list as a drawer, summoned by the hamburger in the room header. */
+    .app-shell.drawer-open .sidebar {
+        display: grid;
+        position: fixed;
+        top: calc(var(--safe-top) + var(--titlebar-h));
+        left: calc(var(--safe-left) + var(--rail-w) + var(--s-2));
+        bottom: calc(var(--safe-bottom) + var(--s-2));
+        width: min(var(--sidebar-w), 84vw);
+        z-index: var(--z-menu);
+        box-shadow: var(--shadow-3);
+        animation: slide-in-left var(--dur) var(--ease);
+    }
+    .app-shell.drawer-open .drawer-scrim {
+        display: block;
+        position: fixed;
+        inset: 0;
+        z-index: var(--z-popover);
+        background: var(--scrim);
+        animation: fade-in var(--dur) var(--ease);
+    }
+}
+
+/* Settings as master and detail: the list of sections, OR one section — never both
+ * squeezed, and never the section alone. Hiding the nav outright, which is what this used
+ * to do, took the only Sign out with it. The frame says which pane is showing
+ * (data-pane); the back crumb and the back button move between them. */
+/* Every selector here carries the dialog's own class: the settings rules are declared further
+ * down this file, and at equal specificity the later rule wins. That is what made the
+ * previous version of this block a dead letter — it never hid anything, and the panel was
+ * squeezed beside a full-width nav at every size. */
+@media (max-width: 720px) {
+    .settings-modal .settings-body { grid-template-columns: minmax(0, 1fr); }
+    .settings[data-pane="panel"] .settings-nav { display: none; }
+    .settings[data-pane="nav"] .settings-panel { display: none; }
+    .settings-modal .settings-nav { border-right: 0; background: transparent; padding: var(--s-2); }
+    .settings-modal .settings-panel { padding: var(--s-4); }
+    .settings-modal .settings { width: 100%; height: 100%; }
+    .modal.settings-modal {
+        max-width: none; max-height: none; width: 100vw; height: 100dvh; margin: 0; border: 0; border-radius: 0;
+        /* Full screen, so the phone's own bars are inside it. */
+        padding: var(--safe-top) var(--safe-right) var(--safe-bottom) var(--safe-left);
+    }
+    .crumb:not(.current), .crumb-sep, .crumb-hint { display: none; }
+    .settings[data-pane="nav"] .crumb.current { display: none; }
+    .settings[data-pane="nav"] .crumb-phone { display: inline; }
+    .settings[data-pane="panel"] .crumb-back { display: grid; }
+}
+
+/* The rail SURVIVES the narrowest widths: it is 66px of always-reachable navigation, and
+ * removing it was what stranded people. Only the telemetry pill gives way. */
+@media (max-width: 620px) {
+    .conn-pill { display: none; }
+    .app-shell.drawer-open .sidebar { left: calc(var(--safe-left) + var(--s-2)); }
+    .timeline-inner, .composer-wrap { padding-left: var(--s-3); padding-right: var(--s-3); }
+    .app-body { grid-template-columns: var(--rail-w) minmax(0, 1fr); }
+}
+
+/* A phone. One column, and the two things a thumb needs without opening anything: the
+ * conversation, and the voice controls. The rail leaves the screen for the drawer, where
+ * it travels with the room list, and the closed sidebar becomes a dock along the bottom
+ * that shows only the self bar — the same element, not a second copy, so there is one mute
+ * button in the DOM and nothing for a test or a click handler to find twice. */
+@media (max-width: 480px) {
+    .app-body {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-rows: minmax(0, 1fr) auto;
+        gap: var(--s-1);
+        padding: 0 var(--s-1) var(--s-1);
+    }
+    .rail { display: none; }
+    .room { grid-row: 1; grid-column: 1; }
+    .room-head { gap: var(--s-2); padding: var(--s-2) var(--s-3); }
+    /* The topic is a sentence; at this width it can only ever be its first two words. */
+    .room-topic { display: none; }
+    .timeline-inner, .composer-wrap { padding-left: var(--s-2); padding-right: var(--s-2); }
+    .composer-wrap { padding-bottom: var(--s-2); }
+
+    /* The dock. Visible overflow so the status menu can open upward out of it. */
+    .app-shell:not(.drawer-open) .sidebar {
+        display: block;
+        grid-row: 2;
+        grid-column: 1;
+        overflow: visible;
+    }
+    .app-shell:not(.drawer-open) .sidebar > :not(#selfBarSlot) { display: none; }
+    .app-shell:not(.drawer-open) .self-bar {
+        flex-direction: row;
+        align-items: center;
+        gap: var(--s-2);
+        min-height: var(--dock-h);
+        padding: var(--s-1) var(--s-2);
+        border-top: 0;
+        border-radius: inherit;
+    }
+    .app-shell:not(.drawer-open) .self-rule { display: none; }
+    .app-shell:not(.drawer-open) .self-actions { padding-left: 0; }
+    /* Typing: the keyboard has taken half the screen, so the dock gives its row back. */
+    .app-shell:not(.drawer-open):has(.composer-input:focus) .sidebar { display: none; }
+
+    /* The drawer brings the rail with it — direct messages would otherwise have no way
+       onto the screen at all. */
+    .app-shell.drawer-open .rail {
+        display: flex;
+        position: fixed;
+        top: calc(var(--safe-top) + var(--titlebar-h));
+        left: var(--safe-left);
+        bottom: var(--safe-bottom);
+        width: var(--rail-w);
+        z-index: var(--z-menu);
+        background: var(--bg-void);
+        animation: slide-in-left var(--dur) var(--ease);
+    }
+    /* Stops short of the right edge on purpose: the strip of room still showing is the
+       obvious place to tap to put the drawer away, the way every phone's drawer works. */
+    .app-shell.drawer-open .sidebar {
+        left: calc(var(--safe-left) + var(--rail-w));
+        width: min(var(--sidebar-w), calc(100vw - var(--safe-left) - var(--rail-w) - var(--s-9)));
+    }
+    /* The picker is appended after the shell; the sibling selector outranks its own rule,
+       which is declared later in this file. */
+    .app-shell ~ .dm-search { left: var(--s-2); right: var(--s-2); width: auto; }
+}
+
+@keyframes slide-in-left {
+    from { transform: translateX(-24px); opacity: 0; }
+    to { transform: none; opacity: 1; }
+}
+@keyframes fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+/* ── Update bar ───────────────────────────────────────────────────────────── */
+
+/* Pinned to the bottom of the window, above everything except a modal. The login screen
+   stays fully usable while this runs — updating is something the app does alongside you,
+   not a wall you wait behind. */
+.update-bar {
+    position: fixed;
+    left: 0; right: 0; bottom: 0;
+    padding-bottom: var(--safe-bottom);
+    z-index: var(--z-toast);
+    background: var(--surface-1);
+    border-top: 1px solid var(--line);
+    box-shadow: var(--shadow-lift);
+}
+.update-bar[hidden] { display: none; }
+
+.update-track {
+    height: 3px;
+    background: var(--line-soft);
+    overflow: hidden;
+}
+.update-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--accent), var(--accent-hi));
+    transition: width var(--dur) var(--ease);
+}
+
+/* A differential update copies unchanged blocks and emits no progress while it does. A
+   percentage frozen for twenty seconds reads as broken; this reads as busy. */
+.update-fill.indeterminate {
+    background: linear-gradient(
+        90deg,
+        transparent 0%,
+        var(--accent) 35%,
+        var(--accent-hi) 50%,
+        var(--accent) 65%,
+        transparent 100%);
+    background-size: 40% 100%;
+    background-repeat: no-repeat;
+    animation: update-sweep 1.4s infinite linear;
+}
+@keyframes update-sweep {
+    from { background-position: -40% 0; }
+    to { background-position: 140% 0; }
+}
+
+.update-row {
+    display: flex;
+    align-items: center;
+    gap: var(--s-3);
+    padding: var(--s-2) var(--s-5);
+    font-size: var(--t-base);
+    color: var(--ink-dim);
+}
+.update-text { flex: 1; min-width: 0; }
+.update-detail { font-variant-numeric: tabular-nums; color: var(--ink-faint); flex: none; }
+
+.update-action {
+    flex: none;
+    padding: 5px var(--s-3);
+    border: 1px solid var(--line);
+    border-radius: var(--r-2);
+    background: var(--surface-3);
+    color: var(--ink);
+    font-size: var(--t-sm);
+    font-weight: 550;
+}
+.update-action:hover:not(:disabled) { border-color: var(--accent); }
+.update-action:disabled { opacity: 0.5; }
+
+/* An update that failed is worth noticing, but the app still works — so this is a notice,
+   not an alarm. */
+.update-bar.failed { border-top-color: rgb(var(--warn-rgb) / 0.4); }
+.update-bar.failed .update-text { color: var(--warn); }
+
+/* ── Voice notice ─────────────────────────────────────────────────────────── */
+
+/* Sits between the timeline and the composer, where it is unmissable without covering
+   anything. Absent entirely when voice is simply working. */
+.voice-notice-slot:empty { display: none; }
+.voice-notice {
+    margin: 0 var(--s-5) var(--s-2);
+    padding: var(--s-2) var(--s-3);
+    border-radius: var(--r-2);
+    border: 1px solid;
+    font-size: var(--t-base);
+}
+.voice-notice.quiet {
+    background: var(--surface-2);
+    border-color: var(--line);
+    color: var(--ink-dim);
+}
+.voice-notice.warn {
+    background: rgb(var(--warn-rgb) / 0.1);
+    border-color: rgb(var(--warn-rgb) / 0.35);
+    color: var(--warn);
+}
+.voice-notice.bad {
+    background: var(--bad-soft);
+    border-color: rgb(var(--bad-rgb) / 0.35);
+    color: var(--bad-text);
+}
+
+/* ── Speaking ─────────────────────────────────────────────────────────────── */
+
+/* A ring around the avatar of whoever is talking. On the avatar rather than the row so it
+   reads at a glance in a list of a dozen people, and as a ring rather than a colour change
+   so it does not fight the presence dot already sitting on the same element. */
+.room-person .avatar {
+    box-shadow: 0 0 0 0 transparent;
+    transition: box-shadow var(--dur-fast) var(--ease);
+}
+/* Not inside the loom. There the ring is written per frame by the renderer, in that
+   person's own colour and scaled to how loudly they are actually talking — an inline
+   style, which would win over this rule anyway. Two things driving one box-shadow is
+   how you end up with a ring that flickers between two colours. */
+.loom-anchors .room-person .avatar { transition: box-shadow var(--dur-fast) var(--ease); }
+.room-people:not(.loom-anchors) > .room-person.speaking .avatar {
+    box-shadow: 0 0 0 2px var(--ok), 0 0 10px -2px var(--ok);
+}
+.room-person.speaking .person-name { color: var(--ink); }
+
+/* ── History paging ───────────────────────────────────────────────────────── */
+
+/* One line above the oldest message: either a fetch in flight or the channel's origin.
+   Small on purpose — paging is plumbing, not an event. */
+.history-note {
+    padding: var(--s-2) var(--s-3) var(--s-3);
+    color: var(--ink-faint);
+    font-size: var(--t-sm);
+    text-align: center;
+    animation: fade-in var(--dur) var(--ease);
+}
+.history-note.cap { color: var(--ink-ghost); }
+
+/* ── Starting a DM ────────────────────────────────────────────────────────── */
+
+/* Anchored beside the rail's plus button: pick a person, get a thread. */
+.dm-search {
+    position: fixed;
+    left: calc(var(--safe-left) + var(--rail-w) + var(--s-2));
+    top: calc(var(--safe-top) + var(--titlebar-h) + 96px);
+    width: 280px;
+    padding: var(--s-3);
+    background: var(--surface-4);
+    border: 1px solid var(--line);
+    border-radius: var(--r-3);
+    box-shadow: var(--shadow-2);
+    z-index: var(--z-menu);
+    animation: pop-in var(--dur-fast) var(--ease);
+}
+.dm-search-title { margin: 0 0 var(--s-2); font-weight: 620; font-size: var(--t-base); }
+
+/* ── The peer menu ────────────────────────────────────────────────────────── */
+
+/* Right-clicking a person. Fixed rather than absolute, and appended to the shell rather
+   than to the row, for two reasons that are both fatal on their own: .room-scroll is
+   overflow-y: auto and .sidebar is overflow: hidden, so a menu inside the row would be
+   clipped by both; and a roster repaint rewrites #roomScroll's innerHTML wholesale, which
+   would simply delete it mid-gesture. */
+.peer-menu {
+    position: fixed;
+    width: 232px;
+    padding: var(--s-2);
+    background: var(--surface-4);
+    border: 1px solid var(--line);
+    border-radius: var(--r-3);
+    box-shadow: var(--shadow-2);
+    z-index: var(--z-menu);
+    animation: pop-in var(--dur-fast) var(--ease);
+}
+.peer-menu-head {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    padding: var(--s-1) var(--s-2) var(--s-2);
+    min-width: 0;
+}
+.peer-menu-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 600;
+    color: var(--ink);
+}
+.peer-menu-item {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    width: 100%;
+    padding: var(--s-2);
+    border-radius: var(--r-2);
+    text-align: left;
+    color: var(--ink-dim);
+    font-size: var(--t-base);
+}
+.peer-menu-item:hover, .peer-menu-item:focus-visible { background: var(--surface-2); color: var(--ink); }
+.peer-menu-item svg { width: 15px; height: 15px; flex: none; }
+.peer-menu-item.danger { color: var(--bad); }
+.peer-menu-item.danger:hover, .peer-menu-item.danger:focus-visible {
+    background: rgb(var(--bad-rgb) / 0.14);
+    color: var(--bad);
+}
+.peer-menu-item[aria-pressed="true"] { color: var(--ink); }
+/* A starred person's star is lit here exactly as it is in the roster. */
+.peer-menu-item[data-peer-priority].on svg { color: var(--gold); fill: var(--gold); }
+
+/* The volume row is not a button, so it does not get the button treatment. */
+.peer-menu-volume {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    padding: var(--s-1) var(--s-2) var(--s-2);
+    color: var(--ink-faint);
+}
+.peer-menu-volume input { flex: 1; min-width: 0; }
+.peer-menu-volume svg { width: 15px; height: 15px; flex: none; }
+
+/* The separation between what anyone may do and what only an administrator may. Quiet on
+   purpose: a heavy rule would read as two menus that happen to be touching. */
+.peer-menu-split {
+    height: 1px;
+    margin: var(--s-2) var(--s-2) var(--s-1);
+    background: var(--line-soft);
+}
+.peer-menu-admin-label {
+    padding: var(--s-1) var(--s-2);
+    font-size: var(--t-xs);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--ink-ghost);
+}
+.peer-menu-note {
+    padding: var(--s-1) var(--s-2) 0;
+    font-size: var(--t-xs);
+    color: var(--ink-ghost);
+}
+
+/* ── Dragging a person into a room ────────────────────────────────────────── */
+
+/* What follows the pointer. Never hit-tested, or elementFromPoint would only ever find
+   the ghost and no drop target could be detected at all. */
+.drag-ghost {
+    position: fixed;
+    z-index: var(--z-drag);
+    pointer-events: none;
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    padding: var(--s-1) var(--s-3);
+    background: var(--surface-4);
+    border: 1px solid var(--line);
+    border-radius: var(--r-2);
+    box-shadow: var(--shadow-2);
+    color: var(--ink);
+    font-size: var(--t-base);
+    opacity: 0.94;
+}
+.room-item.drop-target > .room-line .room-row {
+    background: rgb(var(--accent-rgb) / 0.18);
+    box-shadow: inset 0 0 0 1px var(--accent-hi);
+}
+
+/* The same picker, anchored under the room header's add button instead. */
+.member-picker {
+    left: auto;
+    right: var(--s-5);
+    top: calc(var(--titlebar-h) + 56px);
+}
+.dm-search-list { list-style: none; margin: var(--s-2) 0 0; padding: 0; max-height: 300px; overflow-y: auto; }
+.dm-search-row {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    width: 100%;
+    padding: var(--s-1) var(--s-2);
+    border-radius: var(--r-2);
+    text-align: left;
+}
+.dm-search-row:hover { background: var(--accent-tint-hi); }
+.dm-search-none { padding: var(--s-3); color: var(--ink-faint); font-size: var(--t-sm); }
+
+/* ── The empty room ───────────────────────────────────────────────────────── */
+
+.timeline-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--s-1);
+    padding: var(--s-7) var(--s-3) var(--s-5);
+    animation: fade-in var(--dur-slow) var(--ease);
+}
+.empty-mark {
+    display: grid;
+    place-items: center;
+    width: 52px; height: 52px;
+    border-radius: 50%;
+    background: var(--accent-tint);
+    color: var(--accent-hi);
+    margin-bottom: var(--s-2);
+}
+.empty-mark svg { width: 30px; height: 30px; }
+.empty-title { margin: 0; font-size: var(--t-xl); font-weight: 640; letter-spacing: -0.02em; }
+.empty-sub { margin: 0; color: var(--ink-faint); font-size: var(--t-base); }
+
+/* ── Touch: presses acknowledge, everywhere ───────────────────────────────── */
+
+/* One rule for every button-shaped thing: pressing it visibly gives, releasing springs
+   back. This 40ms of physicality is most of the difference between "snappy" and "dead". */
+.icon-btn, .round-btn, .btn, .chip, .rail-item, .composer-btn, .card-action, .update-action {
+    transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease),
+        border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease),
+        transform var(--dur-fast) var(--ease);
+}
+.icon-btn:active, .round-btn:active, .btn:active, .chip:active,
+.composer-btn:active, .card-action:active, .update-action:active { transform: scale(0.95); }
+.rail-item:active { transform: scale(0.92); }
+
+/* The microphone under push-to-talk: a button you HOLD, not one you click. It used to be
+   disabled outright, which left a phone with push-to-talk on no way to speak at all — there
+   is no key to hold on a touchscreen. Dressed quieter than a toggle so it never reads as
+   "mute", and lit while it is held, because the light is how you know the room hears you.
+   No touch actions and no selection: a long hold must not scroll, select or open a menu. */
+.round-btn.ptt {
+    background: var(--surface-2);
+    border: 1px dashed var(--line-strong);
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
+}
+.round-btn.ptt.held {
+    background: var(--accent);
+    border-color: var(--accent-hi);
+    color: var(--on-accent);
+    box-shadow: var(--shadow-accent);
+}
+
+/* ── Modal ────────────────────────────────────────────────────────────────── */
+
+/* The native <dialog>. showModal() puts it in the top layer, so no z-index is needed and
+   nothing in the app can accidentally cover it. */
+.modal {
+    padding: 0;
+    border: 1px solid var(--line);
+    border-radius: var(--r-4);
+    background: var(--surface-1);
+    color: var(--ink);
+    box-shadow: var(--shadow-3);
+    max-width: min(980px, 92vw);
+    max-height: 88vh;
+    overflow: hidden;
+}
+.modal[open] { animation: modal-in var(--dur) var(--ease); }
+.modal::backdrop { background: var(--scrim); animation: fade-in var(--dur-slow) var(--ease); }
+@keyframes modal-in {
+    from { opacity: 0; transform: translateY(8px) scale(0.985); }
+    to { opacity: 1; transform: none; }
+}
+
+/* ── Bubbles ──────────────────────────────────────────────────────────────── */
+
+/* The same grid cell as the timeline, laid over it. The layer itself takes no clicks, so
+   the conversation underneath stays selectable and scrollable; only the bubbles do. */
+.room > .bubbles-layer {
+    /* Column too, not only row: with the row alone, auto-placement sees the timeline already
+       in that cell and opens an implicit second column of zero width for the layer. */
+    grid-row: 3;
+    grid-column: 1;
+    position: relative;
+    z-index: var(--z-raised);
+    pointer-events: none;
+    overflow: hidden;
+}
+.bubble {
+    position: absolute;
+    left: 0;
+    top: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: transparent;
+    pointer-events: auto;
+    cursor: grab;
+    touch-action: none;
+    transition: opacity var(--dur) var(--ease), scale var(--dur) var(--ease);
+}
+.bubble:active { cursor: grabbing; }
+.bubble-enter, .bubble-exit { opacity: 0; scale: 0.6; }
+.bubble-face {
+    display: block;
+    width: 100%;
+    height: 100%;
+    border-radius: 50%;
+    background: var(--surface-3) center / cover no-repeat;
+    border: 2px solid rgb(var(--accent-rgb) / 0.55);
+    box-shadow: var(--shadow-2);
+}
+.bubble:focus-visible .bubble-face { outline: 2px solid var(--accent-hi); outline-offset: 2px; }
+/* Something new inside: it breathes, as the web app's did. */
+.bubble.is-unread .bubble-face { animation: bubble-throb 1.8s ease-in-out infinite; border-color: var(--accent-hi); }
+@keyframes bubble-throb {
+    0%, 100% { box-shadow: var(--shadow-2), 0 0 0 0 rgb(var(--accent-rgb) / 0.55); }
+    50% { box-shadow: var(--shadow-2), 0 0 0 7px rgb(var(--accent-rgb) / 0); }
+}
+@media (prefers-reduced-motion: reduce) {
+    .bubble.is-unread .bubble-face { animation: none; box-shadow: var(--shadow-2), 0 0 0 3px rgb(var(--accent-rgb) / 0.6); }
+}
+/* The name folds out beside the bubble on hover, towards whichever side has room. */
+.bubble-label {
+    position: absolute;
+    top: 50%;
+    left: calc(100% + var(--s-2));
+    translate: 0 -50%;
+    padding: 2px var(--s-2);
+    border-radius: var(--r-pill);
+    background: var(--surface-4);
+    color: var(--ink);
+    font-size: var(--t-xs);
+    white-space: nowrap;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--dur-fast) var(--ease);
+}
+.bubble.label-left .bubble-label { left: auto; right: calc(100% + var(--s-2)); }
+.bubble:hover .bubble-label, .bubble:focus-visible .bubble-label { opacity: 1; }
+
+/* A bubble's photo anywhere else: the popup head, the list, the admin table. */
+.bubble-thumb {
+    display: inline-grid;
+    place-items: center;
+    flex: none;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background: var(--surface-3) center / cover no-repeat;
+    color: var(--ink-faint);
+}
+.bubble-thumb.lg { width: 40px; height: 40px; }
+.bubble-thumb svg { width: 60%; height: 60%; }
+
+/* The conversation a bubble opens into. Fixed, on the menu layer, out of every overflow. */
+.bubble-popup {
+    position: fixed;
+    z-index: var(--z-menu);
+    width: min(340px, 92vw);
+    max-height: min(460px, 70vh);
+    display: flex;
+    flex-direction: column;
+    background: var(--surface-4);
+    border: 1px solid var(--line);
+    border-radius: var(--r-3);
+    box-shadow: var(--shadow-2);
+    animation: pop-in var(--dur-fast) var(--ease);
+}
+.bubble-popup-head {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    padding: var(--s-2) var(--s-2) var(--s-2) var(--s-3);
+    border-bottom: 1px solid var(--line-soft);
+}
+.bubble-popup-name { flex: 1; min-width: 0; font-weight: 640; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bubble-popup-body { flex: 1; min-height: 80px; overflow-y: auto; padding: var(--s-2) var(--s-3); }
+.bubble-popup-body .msg { grid-template-columns: 28px minmax(0, 1fr); margin: 0; padding: var(--s-1) 0; }
+.bubble-popup-body .msg .avatar { width: 28px; height: 28px; font-size: var(--t-xs); }
+.bubble-popup-body .attach-image { max-width: 100%; }
+.bubble-popup-note { margin: var(--s-3) 0; color: var(--ink-faint); font-size: var(--t-sm); text-align: center; }
+.bubble-popup-note.error { color: var(--bad-text); }
+.bubble-popup-composer {
+    display: flex;
+    align-items: center;
+    gap: var(--s-1);
+    padding: var(--s-2);
+    border-top: 1px solid var(--line-soft);
+}
+.bubble-popup-input {
+    flex: 1;
+    min-width: 0;
+    background: var(--bg-void);
+    border: 1px solid var(--line);
+    border-radius: var(--r-pill);
+    color: var(--ink);
+    padding: var(--s-1) var(--s-3);
+    font-size: var(--t-sm);
+}
+
+/* Every bubble, floating or not. */
+.all-bubbles { width: min(460px, 92vw); max-height: 80vh; overflow-y: auto; padding: var(--s-6); }
+.all-bubbles-list { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--s-1); }
+.all-bubbles-row {
+    display: flex;
+    align-items: center;
+    gap: var(--s-3);
+    width: 100%;
+    padding: var(--s-2) var(--s-3);
+    border-radius: var(--r-2);
+    text-align: left;
+}
+.all-bubbles-row:hover, .all-bubbles-row:focus-visible { background: var(--accent-tint-hi); }
+.all-bubbles-name { flex: 1; min-width: 0; font-weight: 600; }
+.all-bubbles-tag, .all-bubbles-unread {
+    padding: 2px var(--s-2);
+    border-radius: var(--r-pill);
+    font-size: var(--t-xs);
+}
+.all-bubbles-tag { background: var(--surface-3); color: var(--ink-faint); }
+.all-bubbles-unread { background: var(--accent-tint); color: var(--accent-hi); }
+
+/* The way into the list, in the room head: a dot when one of them has news. */
+.bubbles-btn { position: relative; }
+.bubbles-btn.has-unread::after {
+    content: "";
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--accent-hi);
+}
+
+/* ── What's new ───────────────────────────────────────────────────────────── */
+
+/* Release notes after an update. It scrolls inside the dialog rather than the dialog
+   growing past the window, because a few versions of notes can be long. */
+.whats-new { width: min(640px, 92vw); max-height: 82vh; overflow-y: auto; padding: var(--s-6); }
+.whats-new-version + .whats-new-version { margin-top: var(--s-5); padding-top: var(--s-5); border-top: 1px solid var(--line-soft); }
+.whats-new-heading { margin: 0 0 var(--s-2); font-size: var(--t-lg); font-weight: 650; }
+.whats-new-date { margin-left: var(--s-2); font-size: var(--t-sm); font-weight: 400; color: var(--ink-faint); }
+.whats-new-kind {
+    margin: var(--s-3) 0 var(--s-1);
+    font-size: var(--t-xs);
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+}
+.whats-new-items { margin: 0; padding-left: var(--s-5); display: grid; gap: var(--s-2); color: var(--ink-dim); }
+.whats-new-items p { margin: 0 0 var(--s-1); }
+.whats-new-items strong { color: var(--ink); }
+.whats-new-items code { font-size: 0.92em; padding: 0 4px; border-radius: var(--r-1); background: var(--surface-3); }
+.whats-new-actions { display: flex; justify-content: flex-end; margin-top: var(--s-5); }
+
+/* Two buttons on one settings row. */
+.setting-actions { display: flex; gap: var(--s-2); flex-wrap: wrap; justify-content: flex-end; }
+
+/* ── Settings ─────────────────────────────────────────────────────────────── */
+
+.settings { display: grid; grid-template-rows: auto minmax(0, 1fr); width: min(980px, 92vw); height: 88vh; }
+
+.settings-crumb {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    padding: var(--s-3) var(--s-4);
+    border-bottom: 1px solid var(--line-soft);
+    font-size: var(--t-sm);
+    color: var(--ink-faint);
+}
+.crumb.current { color: var(--ink); font-weight: 550; }
+/* The narrow layout's own two pieces: a way back to the section list, and its title.
+   Both exist only where the list and the section take turns; see the 720px block. */
+.crumb-back { display: none; font-size: var(--t-lg); }
+.crumb-phone { display: none; color: var(--ink); font-weight: 600; font-size: var(--t-base); }
+.crumb-sep { color: var(--ink-ghost); }
+.crumb-spacer { flex: 1; }
+.crumb-hint { color: var(--ink-ghost); }
+
+.settings-body { display: grid; grid-template-columns: 232px minmax(0, 1fr); min-height: 0; }
+
+.settings-nav {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: var(--s-3) var(--s-2);
+    background: var(--bg-void);
+    border-right: 1px solid var(--line-soft);
+    overflow-y: auto;
+}
+.nav-group {
+    margin: var(--s-4) var(--s-3) var(--s-1);
+    font-size: var(--t-xs);
+    font-weight: 700;
+    letter-spacing: 0.09em;
+    color: var(--ink-faint);
+    text-transform: uppercase;
+}
+.nav-group:first-child { margin-top: var(--s-1); }
+.nav-spacer { flex: 1; min-height: var(--s-5); }
+
+.nav-item {
+    display: flex;
+    align-items: center;
+    gap: var(--s-3);
+    width: 100%;
+    padding: var(--s-2) var(--s-3);
+    border-radius: var(--r-2);
+    color: var(--ink-dim);
+    font-size: var(--t-base);
+    text-align: left;
+}
+.nav-item svg { width: 16px; height: 16px; flex: none; }
+.nav-item span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nav-item:hover { background: var(--surface-2); color: var(--ink); }
+.nav-item.current { background: var(--accent-tint-hi); color: var(--ink); }
+.nav-item.danger { color: var(--bad); }
+.nav-item.danger:hover { background: var(--bad-soft); }
+
+/* A dot rather than a word: it marks the screens that are designed but not built, without
+   shouting about it in a list you read every time. */
+.nav-flag { flex: none !important; color: var(--warn); font-size: var(--t-lg); line-height: 0; }
+
+.settings-panel { overflow-y: auto; padding: var(--s-6) var(--s-7); }
+
+.panel-title { margin: 0 0 var(--s-1); font-size: var(--t-xl); font-weight: 640; letter-spacing: -0.02em; }
+.panel-lead { margin: 0 0 var(--s-6); color: var(--ink-dim); font-size: var(--t-base); }
+.panel-section {
+    margin: var(--s-7) 0 var(--s-3);
+    font-size: var(--t-xs);
+    font-weight: 700;
+    letter-spacing: 0.09em;
+    color: var(--ink-faint);
+    text-transform: uppercase;
+}
+
+/* ── Profile card ─────────────────────────────────────────────────────────── */
+
+.profile-card {
+    border: 1px solid var(--line);
+    border-radius: var(--r-3);
+    overflow: hidden;
+    margin-bottom: var(--s-6);
+}
+/* The rename form sits between the card and the setting rows, and a row's padding is
+   inside its border — so without this the Save button touches the row beneath it. */
+.name-form { margin-bottom: var(--s-6); }
+.profile-banner {
+    height: 84px;
+    background:
+        radial-gradient(600px 200px at 20% 120%, rgb(var(--accent-rgb) / 0.5) 0%, transparent 70%),
+        linear-gradient(120deg, var(--surface-3), var(--surface-2));
+}
+.profile-identity { display: flex; align-items: center; gap: var(--s-4); padding: var(--s-4); margin-top: -34px; }
+.profile-identity .avatar { border: 3px solid var(--surface-1); width: 68px; height: 68px; font-size: var(--t-xl); }
+.profile-name { display: flex; align-items: center; gap: var(--s-2); font-size: var(--t-lg); font-weight: 620; }
+.profile-meta { color: var(--ink-faint); font-size: var(--t-sm); margin-top: 2px; }
+
+/* ── Settings rows ────────────────────────────────────────────────────────── */
+
+.setting {
+    display: flex;
+    align-items: center;
+    gap: var(--s-4);
+    padding: var(--s-3) 0;
+    border-bottom: 1px solid var(--line-soft);
+}
+.setting.is-disabled { opacity: 0.5; }
+.setting-text { flex: 1; min-width: 0; cursor: pointer; }
+.setting-label { display: block; font-weight: 550; }
+.setting-hint, .setting-note { display: block; font-size: var(--t-sm); color: var(--ink-faint); margin-top: 2px; }
+.setting-note { color: var(--ink-ghost); }
+/* A setting the operating system refused, e.g. a shortcut another program already holds. */
+.setting-note.setting-refused { color: var(--bad-text); }
+
+/* A switch built from a checkbox, so it keeps every keyboard and screen-reader behaviour
+   the native control already has. */
+.switch {
+    appearance: none;
+    flex: none;
+    width: 42px; height: 24px;
+    border-radius: var(--r-pill);
+    background: var(--surface-3);
+    border: 1px solid var(--line);
+    position: relative;
+    cursor: pointer;
+    transition: background var(--dur);
+}
+.switch::after {
+    content: "";
+    position: absolute;
+    top: 2px; left: 2px;
+    width: 18px; height: 18px;
+    border-radius: 50%;
+    background: var(--ink-dim);
+    transition: transform var(--dur) var(--ease), background var(--dur);
+}
+.switch:checked { background: var(--accent); border-color: transparent; }
+.switch:checked::after { transform: translateX(18px); background: var(--on-accent); }
+.switch:disabled { cursor: not-allowed; }
+
+/* Selects in settings rows were NAKED natives — Windows painted them highlight-blue
+   with unreadable text. They dress like every other input now. */
+.setting select {
+    flex: none;
+    max-width: 240px;
+    background: var(--surface-0);
+    border: 1px solid var(--line);
+    border-radius: var(--r-2);
+    color: var(--ink);
+    padding: var(--s-2) var(--s-3);
+    font-size: var(--t-base);
+}
+.setting select option { background: var(--surface-1); color: var(--ink); }
+
+/* A select with a play/stop preview button riding next to it — sound pickers only. */
+.sound-select-row { display: flex; align-items: center; gap: var(--s-2); }
+
+#activeMic.is-warn { color: var(--warn); }
+
+.reset-link {
+    margin-left: var(--s-2);
+    font-size: var(--t-xs);
+    color: var(--accent-hi);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+.reset-link:hover { color: var(--ink); }
+
+/* Sliders and the mic meter: the reflexive half of the panel. */
+.setting-range { flex: none; width: 190px; accent-color: var(--accent); }
+.slider-value {
+    margin-left: var(--s-2);
+    font-size: var(--t-sm);
+    color: var(--accent-hi);
+    font-variant-numeric: tabular-nums;
+}
+.mic-meter {
+    position: relative;
+    display: block;
+    height: 8px;
+    margin-top: var(--s-2);
+    border-radius: var(--r-pill);
+    background: var(--surface-0);
+    border: 1px solid var(--line-soft);
+    overflow: hidden;
+}
+/* The one-bar form: the meter IS the slider. The range rides invisibly on top; its
+   thumb is the same line the mark draws, so dragging feels like moving the line. */
+.mic-meter.is-control { height: 22px; overflow: visible; border-radius: var(--r-2); }
+.mic-meter.is-control .mic-meter-fill { border-radius: var(--r-2) 0 0 var(--r-2); }
+.meter-range {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    margin: 0;
+    appearance: none;
+    background: transparent;
+    cursor: ew-resize;
+}
+.meter-range::-webkit-slider-thumb {
+    appearance: none;
+    width: 10px;
+    height: 30px;
+    border-radius: var(--r-1);
+    background: transparent;
+    border: 0;
+}
+.meter-range:disabled { cursor: not-allowed; }
+.mic-meter-fill {
+    display: block;
+    height: 100%;
+    width: 0;
+    background: var(--ink-faint);
+    border-radius: var(--r-pill);
+    transition: width 70ms linear, background var(--dur-fast);
+}
+.mic-meter-fill.open { background: var(--ok); }
+.mic-meter-mark {
+    position: absolute;
+    top: -3px; bottom: -3px;
+    width: 3px;
+    border-radius: var(--r-1);
+    background: var(--accent-hi);
+    box-shadow: 0 0 6px rgb(var(--accent-rgb) / 0.6);
+    pointer-events: none;
+}
+
+.key-capture {
+    flex: none;
+    min-width: 96px;
+    padding: var(--s-2) var(--s-3);
+    border: 1px solid var(--line);
+    border-radius: var(--r-2);
+    background: var(--surface-0);
+    font: var(--t-sm) var(--font-mono);
+    color: var(--ink);
+}
+.key-capture:hover:not(:disabled) { border-color: var(--accent); }
+.key-capture.capturing { border-color: var(--accent); color: var(--accent-hi); }
+
+/* ── Not-yet ──────────────────────────────────────────────────────────────── */
+
+/* A control that cannot work, and why. The reason is the point: it tells somebody nothing
+   is wrong with their account and nothing is wrong with their machine. */
+.not-yet {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: var(--s-3) 76px var(--s-3) var(--s-3);
+    margin: var(--s-2) 0;
+    border: 1px solid var(--line-soft);
+    border-radius: var(--r-2);
+    background: var(--surface-0);
+}
+/* Named as a plan, so the muted card reads as "coming" rather than "broken". */
+.not-yet::after {
+    content: "Planned";
+    position: absolute;
+    top: var(--s-3); right: var(--s-3);
+    padding: 2px var(--s-2);
+    border-radius: var(--r-pill);
+    background: var(--accent-tint);
+    color: var(--accent-hi);
+    font-size: var(--t-xs);
+    font-weight: 650;
+    letter-spacing: 0.04em;
+}
+.not-yet.standalone { margin-top: var(--s-5); padding: var(--s-5); }
+
+/* "Test my setup": the phase line while it runs, then one line per finding, each edged in
+   the colour of how much it matters. */
+.mic-test-phase { margin: 0 0 var(--s-2); color: var(--accent-hi); font-size: var(--t-sm); }
+.mic-test-findings { list-style: none; margin: 0 0 var(--s-3); padding: 0; display: grid; gap: var(--s-1); }
+.mic-test-findings li {
+    padding: var(--s-2) var(--s-3);
+    border-left: 3px solid var(--line-strong);
+    border-radius: var(--r-1);
+    background: var(--surface-2);
+    font-size: var(--t-sm);
+    color: var(--ink-dim);
+}
+.mic-test-findings .tone-good { border-left-color: var(--ok); color: var(--ok-text); }
+.mic-test-findings .tone-warn { border-left-color: var(--warn); }
+.mic-test-findings .tone-bad { border-left-color: var(--bad); color: var(--bad-text); }
+.not-yet-what { font-weight: 550; color: var(--ink-dim); }
+.not-yet-why { font-size: var(--t-sm); color: var(--ink-faint); }
+
+/* The row in the device list that is the one being read. Same pill as "Planned" wears,
+   because it is doing the same job: a quiet label on a row, not a control. */
+.session-here {
+    margin-left: var(--s-2);
+    padding: 2px var(--s-2);
+    border-radius: var(--r-pill);
+    background: var(--accent-tint);
+    color: var(--accent-hi);
+    font-size: var(--t-xs);
+    font-weight: 600;
+    vertical-align: middle;
+}
+
+/* ── Report a Bug ─────────────────────────────────────────────────────────── */
+
+/* An inline control that reads as part of the sentence around it. "Show me exactly what
+   will be sent" is an aside, not a step, and a full button would over-state it. */
+.linkish {
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--accent-hi);
+    font: inherit;
+    text-decoration: underline;
+    cursor: pointer;
+}
+.linkish:hover { color: var(--ink); }
+
+/* The exact text that would be sent. Scrolls inside itself rather than growing the panel,
+   because the point is that it can be inspected, not that it must be read. */
+.bug-log {
+    max-height: 260px;
+    overflow: auto;
+    margin: var(--s-2) 0;
+    padding: var(--s-3);
+    border: 1px solid var(--line);
+    border-radius: var(--r-2);
+    background: var(--surface-0);
+    color: var(--ink-dim);
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+/* What the reporter actually said, which is the part an administrator reads first and
+   the only part written by a person rather than by the software. */
+.bug-said {
+    margin: var(--s-2) 0 var(--s-4);
+    padding: var(--s-3);
+    border-left: 2px solid var(--accent-tint-hi);
+    color: var(--ink);
+    white-space: pre-wrap;
+}
+
+/* A description is a paragraph, not a line: it opens at a size that invites one. */
+.sec-form textarea {
+    width: 100%;
+    min-height: 140px;
+    padding: var(--s-3);
+    border: 1px solid var(--line);
+    border-radius: var(--r-2);
+    background: var(--surface-0);
+    color: var(--ink);
+    font: inherit;
+    line-height: 1.55;
+    resize: vertical;
+}
+.sec-form textarea:focus-visible { outline: 2px solid var(--focus-line); outline-offset: 1px; }
+
+/* ── Invites ──────────────────────────────────────────────────────────────── */
+
+.invite-result {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-2);
+    align-items: flex-start;
+    padding: var(--s-4);
+    margin-bottom: var(--s-4);
+    border: 1px solid rgb(var(--gold-rgb) / 0.35);
+    background: rgb(var(--gold-rgb) / 0.07);
+    border-radius: var(--r-3);
+}
+.invite-label { font-size: var(--t-sm); color: var(--ink-dim); }
+.invite-link {
+    font: var(--t-sm) var(--font-mono);
+    color: var(--accent-hi);
+    word-break: break-all;
+    user-select: all;
+}
+.invite-code {
+    font: var(--t-xl) var(--font-mono);
+    letter-spacing: 0.14em;
+    color: var(--gold);
+    user-select: all;
+}
+.invite-meta { font-size: var(--t-sm); color: var(--ink-faint); }
+
+
+/* ── Room browser ─────────────────────────────────────────────────────────── */
+
+.browser { display: flex; flex-direction: column; width: min(940px, 92vw); max-height: 82vh; padding: var(--s-6); }
+
+.browser-head { display: flex; align-items: flex-start; gap: var(--s-3); margin-bottom: var(--s-5); }
+.browser-head .panel-lead { margin-bottom: 0; }
+.browser-spacer { flex: 1; }
+
+.chips { display: flex; gap: var(--s-1); flex: none; }
+.chip {
+    padding: var(--s-2) var(--s-3);
+    border: 1px solid var(--line);
+    border-radius: var(--r-pill);
+    background: var(--surface-2);
+    color: var(--ink-dim);
+    font-size: var(--t-sm);
+}
+.chip:hover { color: var(--ink); border-color: var(--line-strong); }
+.chip.current { background: var(--accent-tint-hi); border-color: rgb(var(--accent-rgb) / 0.5); color: var(--ink); }
+
+.room-cards {
+    list-style: none;
+    margin: 0;
+    padding: 0 var(--s-1) var(--s-1);
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(258px, 1fr));
+    gap: var(--s-4);
+    overflow-y: auto;
+}
+
+.room-card {
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--line);
+    border-radius: var(--r-3);
+    background: var(--surface-2);
+    overflow: hidden;
+    transition: border-color var(--dur-fast), transform var(--dur-fast) var(--ease),
+        box-shadow var(--dur-fast) var(--ease);
+}
+.room-card:hover { border-color: var(--line-strong); transform: translateY(-2px); box-shadow: var(--shadow-2); }
+/* The room you are in is marked in gold rather than the accent, so it does not read as
+   "selected, click me" — you are already there. */
+.room-card.current { border-color: rgb(var(--gold-rgb) / 0.55); }
+
+.card-head {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    padding: var(--s-3);
+    /* A stable colour per room, derived from its name, so a card is recognisable before it
+       is read. Low chroma on purpose: at full saturation the hashes hand out grass-green
+       and maroon headers that fight the app; a tint identifies without shouting. */
+    background:
+        linear-gradient(120deg,
+            hsl(var(--card-hue, 268) 32% 19% / 0.75),
+            hsl(calc(var(--card-hue, 268) + 34) 26% 14% / 0.6));
+    border-bottom: 1px solid var(--line-soft);
+}
+.card-icon { display: grid; place-items: center; width: 18px; color: var(--ink-dim); flex: none; }
+.card-icon svg { width: 16px; height: 16px; }
+.card-name { flex: 1; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.card-state {
+    flex: none;
+    padding: 2px var(--s-2);
+    border-radius: var(--r-pill);
+    font-size: var(--t-xs);
+    font-weight: 650;
+}
+.card-state.live { background: var(--ok-soft); color: var(--ok); }
+.card-state.idle { background: rgb(var(--warn-rgb) / 0.13); color: var(--warn); }
+.card-state.empty { background: var(--surface-3); color: var(--ink-faint); }
+
+.card-body { padding: var(--s-4) var(--s-3); min-height: 56px; display: flex; align-items: center; }
+.card-empty { color: var(--ink-ghost); font-size: var(--t-base); font-style: italic; }
+
+/* Overlapping faces, so a busy room is legible at a glance rather than a row of dots. */
+.face-stack { display: flex; }
+.face-stack .avatar { margin-right: -8px; border: 2px solid var(--surface-2); }
+.face-more {
+    display: grid;
+    place-items: center;
+    min-width: var(--avatar-sm); height: var(--avatar-sm);
+    padding: 0 var(--s-1);
+    margin-left: var(--s-3);
+    border-radius: var(--r-pill);
+    background: var(--surface-3);
+    color: var(--ink-dim);
+    font-size: var(--t-xs);
+    font-weight: 650;
+}
+
+.card-foot {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    padding: var(--s-3);
+    border-top: 1px solid var(--line-soft);
+}
+.card-who {
+    flex: 1;
+    min-width: 0;
+    font-size: var(--t-xs);
+    color: var(--ink-faint);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.card-action { flex: none; padding: var(--s-2) var(--s-4); font-size: var(--t-base); }
+
+/* ── Creating a room ──────────────────────────────────────────────────────── */
+
+.create-room { display: flex; flex-direction: column; gap: var(--s-5); max-width: 460px; }
+
+.kind-pick { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-3); }
+.kind-card {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-1);
+    padding: var(--s-4);
+    border: 1px solid var(--line);
+    border-radius: var(--r-3);
+    background: var(--surface-2);
+    cursor: pointer;
+    transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+.kind-card:hover { border-color: var(--line-strong); }
+/* The radio itself is visually folded into the card; checked state carries the meaning. */
+.kind-card input { position: absolute; opacity: 0; pointer-events: none; }
+.kind-card:has(input:checked) {
+    border-color: var(--accent);
+    background: var(--accent-tint);
+}
+/* The radio is invisible, so the ring the browser would draw on it is too. Without this a
+   keyboard user moving through the cards with the arrow keys cannot see where they are. */
+.kind-card:has(input:focus-visible) { outline: 2px solid var(--focus-line); outline-offset: 2px; }
+.kind-name { display: flex; align-items: center; gap: var(--s-2); font-weight: 600; }
+.kind-name svg { width: 17px; height: 17px; }
+.kind-hint { font-size: var(--t-sm); color: var(--ink-faint); }
+
+.create-actions { display: flex; gap: var(--s-2); justify-content: flex-end; }
+
+.browser-empty, .browser-note {
+    color: var(--ink-faint);
+    font-size: var(--t-base);
+    text-align: center;
+    padding: var(--s-6) 0 0;
+}
+
+/* ── The admin console ─────────────────────────────────────────────────────
+   Settings panels for administrators: dense rows, quiet until hovered, and one
+   deliberately theatrical corner. Destructive buttons arm on the first click —
+   the .armed state is the question being asked. */
+
+.btn.small {
+    padding: 4px 10px;
+    font-size: var(--t-xs);
+    border-radius: 6px;
+}
+
+.link-btn {
+    background: none;
+    border: 0;
+    padding: 0;
+    color: var(--accent-hi);
+    font: inherit;
+    cursor: pointer;
+    text-decoration: underline;
+}
+
+.admin-table {
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--line-soft);
+    border-radius: 10px;
+    overflow: hidden;
+    margin-bottom: var(--s-5);
+}
+
+.adm-row {
+    display: flex;
+    align-items: center;
+    gap: var(--s-3);
+    /* Wrap rather than squeeze: when the badges and actions cannot fit beside the name, they
+       drop to the next line instead of crushing the identity out of the row. */
+    flex-wrap: wrap;
+    row-gap: var(--s-2);
+    padding: var(--s-2) var(--s-3);
+    border-bottom: 1px solid var(--line-soft);
+    min-height: 52px;
+}
+.adm-row:last-child { border-bottom: 0; }
+.adm-row:hover { background: rgb(var(--accent-rgb) / 0.05); }
+
+.adm-who {
+    display: flex;
+    align-items: center;
+    gap: var(--s-3);
+    /* Never below a readable width: the name may ellipsize, but it is always THERE. Badges
+       and actions wrap under it rather than pushing it to nothing. */
+    min-width: 160px;
+    flex: 1 1 220px;
+}
+.adm-names { display: flex; flex-direction: column; min-width: 0; }
+/* A row with no avatar puts its names straight in the row; they take the room an .adm-who
+   would, so the actions and switches sit at the far edge either way. */
+.adm-row > .adm-names { flex: 1 1 220px; min-width: 160px; }
+.adm-display {
+    color: var(--ink);
+    font-weight: 600;
+    font-size: var(--t-sm);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.adm-username {
+    color: var(--ink-faint);
+    font-size: var(--t-xs);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.adm-flags { display: flex; align-items: center; gap: var(--s-2); flex: none; }
+.badge.banned { background: rgb(var(--bad-rgb) / 0.18); color: var(--bad); }
+.badge.reset { background: rgb(var(--warn-rgb) / 0.18); color: var(--warn); }
+.badge.default { background: rgb(var(--ok-rgb) / 0.18); color: var(--ok); }
+
+.adm-actions { display: flex; align-items: center; gap: var(--s-2); flex: none; flex-wrap: wrap; }
+/* Row actions stay out of the way until the row is under the pointer or holds focus. */
+.adm-row .adm-actions { opacity: 0; transition: opacity 120ms ease; }
+.adm-row:hover .adm-actions,
+.adm-row:focus-within .adm-actions { opacity: 1; }
+
+.danger-btn.armed {
+    background: rgb(var(--bad-rgb) / 0.16);
+    color: var(--bad);
+    border-color: var(--bad);
+}
+
+.adm-edit { display: flex; align-items: center; gap: var(--s-2); }
+.adm-edit input {
+    background: var(--bg-void);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    color: var(--ink);
+    padding: 4px 8px;
+    font-size: var(--t-sm);
+    min-width: 0;
+    width: 180px;
+}
+
+.adm-create { display: flex; gap: var(--s-2); align-items: center; }
+.adm-create input,
+.adm-create select {
+    background: var(--bg-void);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    color: var(--ink);
+    padding: var(--s-2) var(--s-3);
+    font-size: var(--t-sm);
+}
+.adm-create input { flex: 1; min-width: 0; }
+.adm-create { flex-wrap: wrap; }
+
+/* The per-person sound choices are values to read, not row actions, so they are always
+   shown — and styled like the other admin inputs. */
+.adm-row[data-person-sounds] .adm-actions { opacity: 1; }
+.adm-row select,
+.adm-number,
+.settings-panel input[type="text"][data-server-setting] {
+    background: var(--bg-void);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    color: var(--ink);
+    padding: var(--s-1) var(--s-2);
+    font-size: var(--t-sm);
+}
+.adm-number { width: 7.5em; }
+.invite-code { font-family: var(--font-mono); letter-spacing: 0.04em; }
+
+.adm-stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+    gap: var(--s-2);
+    margin-bottom: var(--s-5);
+}
+.adm-stat {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    border: 1px solid var(--line-soft);
+    border-radius: 10px;
+    padding: var(--s-2) var(--s-3);
+    min-width: 0;
+}
+.adm-stat-label {
+    color: var(--ink-ghost);
+    font-size: var(--t-xs);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+.adm-stat-value {
+    color: var(--ink);
+    font-size: var(--t-sm);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.adm-log-head { display: flex; align-items: center; justify-content: space-between; }
+.adm-log {
+    background: var(--bg-void);
+    border: 1px solid var(--line-soft);
+    border-radius: 10px;
+    padding: var(--s-3);
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    line-height: 1.5;
+    color: var(--ink-dim);
+    max-height: 320px;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+/* The one button nobody should press. Loud on purpose: everything else in the app
+   whispers, so the thing that destroys the server must not look routine. */
+.doom-zone {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-3);
+    align-items: flex-start;
+    border: 1px dashed rgb(var(--bad-rgb) / 0.5);
+    border-radius: 12px;
+    padding: var(--s-5);
+    margin-top: var(--s-5);
+}
+.doom-zone.armed { border-style: solid; background: rgb(var(--bad-rgb) / 0.06); }
+
+.doom-btn {
+    background: var(--bad);
+    color: var(--on-accent);
+    border: 0;
+    border-radius: 10px;
+    padding: var(--s-4) var(--s-6);
+    font-weight: 800;
+    font-size: var(--t-lg);
+    letter-spacing: 0.12em;
+    cursor: pointer;
+    box-shadow: 0 6px 24px rgb(var(--bad-rgb) / 0.35);
+}
+.doom-btn:hover { filter: brightness(1.1); }
+
+.doom-hint { color: var(--ink-faint); font-size: var(--t-xs); max-width: 46ch; }
+.doom-title { color: var(--bad); font-size: var(--t-md); margin: 0; }
+.doom-copy { color: var(--ink-dim); font-size: var(--t-sm); margin: 0; max-width: 52ch; }
+
+.doom-riddle {
+    font-family: var(--font-mono);
+    font-size: var(--t-lg);
+    letter-spacing: 0.3em;
+    color: var(--warn);
+    background: var(--bg-void);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: var(--s-2) var(--s-4);
+    user-select: none;
+}
+
+.doom-zone input[data-doom-answer] {
+    background: var(--bg-void);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    color: var(--ink);
+    padding: var(--s-2) var(--s-3);
+    font-size: var(--t-sm);
+    width: min(320px, 100%);
+}
+
+/* ── Opt-in streams: placeholders, the Watch verb, and the carousel ───────── */
+
+/* An unwatched stream: present, silent, costing nothing. The placeholder is the
+   indication; the hover is the invitation. */
+.tile.idle { cursor: pointer; }
+.ph {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+}
+.ph-screen {
+    background: repeating-linear-gradient(45deg, var(--bg-app) 0 12px, var(--surface-0) 12px 24px);
+    color: var(--ink-faint);
+}
+.ph-screen svg { width: 28px; height: 28px; }
+.ph-cam { background: var(--video-backdrop); }
+/* A stopped stream wears its own last frame, blurred: unmistakably a picture, and just
+   as unmistakably not a live one. The oversize + crop hides the blur's soft edges; the
+   veil above it keeps the badge, chip and Watch button legible. */
+.ph-still { overflow: hidden; background: var(--video-backdrop); }
+.ph-blur {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    filter: blur(14px) saturate(0.85) brightness(0.7);
+    transform: scale(1.12);
+}
+.ph-face {
+    width: 56px; height: 56px;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    background: var(--av, var(--surface-3));
+    color: var(--on-accent);
+    font-weight: 700;
+    font-size: var(--t-lg);
+}
+.stage-strip .ph-face { width: 38px; height: 38px; font-size: var(--t-sm); }
+
+/* The one verb, centred, on approach. The veil dims the picture-to-be just enough
+   that the button reads against stripes and faces alike. */
+.watch-veil {
+    position: absolute;
+    inset: 0;
+    background: var(--scrim);
+    opacity: 0;
+    transition: opacity var(--dur-fast) var(--ease);
+    pointer-events: none;
+}
+.watch-btn {
+    position: absolute;
+    left: 50%; top: 50%;
+    transform: translate(-50%, -50%) scale(0.94);
+    display: inline-flex;
+    align-items: center;
+    gap: var(--s-2);
+    padding: var(--s-2) var(--s-4);
+    border-radius: var(--r-pill);
+    background: var(--accent);
+    color: var(--on-accent);
+    font-size: var(--t-sm);
+    font-weight: 700;
+    box-shadow: var(--shadow-accent);
+    opacity: 0;
+    transition: opacity var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+}
+.watch-btn svg { width: 14px; height: 14px; }
+.tile:hover .watch-veil,
+.tile:focus-visible .watch-veil { opacity: 1; }
+.tile:hover .watch-btn,
+.tile:focus-visible .watch-btn,
+.watch-btn:focus-visible {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+}
+.stage-strip .watch-btn { padding: var(--s-1) var(--s-3); font-size: var(--t-xs); }
+.stage-strip .watch-btn svg { width: 11px; height: 11px; }
+/* At the limit: still there, so the tile still says what it is, but plainly not an offer. */
+.watch-btn[disabled] { background: var(--surface-3); color: var(--ink-faint); box-shadow: none; cursor: not-allowed; }
+
+/* The thumbnail carousel: four in view, the rest a press away. */
+.strip-shell {
+    display: flex;
+    align-items: center;
+    gap: var(--s-1);
+    min-width: 0;
+}
+.strip-shell .stage-strip { flex: 1; min-width: 0; scroll-behavior: smooth; }
+.strip-nav {
+    flex: none;
+    width: 26px;
+    height: 64px;
+    display: grid;
+    place-items: center;
+    border-radius: var(--r-2);
+    background: var(--surface-2);
+    color: var(--ink-dim);
+    font-size: var(--t-lg);
+    line-height: 1;
+}
+.strip-nav:hover { background: var(--surface-3); color: var(--ink); }
+
+/* ── Rich chat: links, previews, images, embeds ───────────────────────────── */
+
+.msg-link { color: var(--accent-hi); text-decoration: none; word-break: break-all; }
+.msg-link:hover { text-decoration: underline; }
+
+.link-preview { text-decoration: none; }
+.preview-thumb {
+    width: 120px;
+    height: 68px;
+    object-fit: cover;
+    border-radius: var(--r-1);
+    flex: none;
+}
+
+/* Inline image attachments: bounded, rounded, and openable. */
+.attach-image-wrap { margin: var(--s-2) 0 0; }
+.attach-image {
+    max-width: min(420px, 100%);
+    max-height: 320px;
+    border-radius: var(--r-2);
+    border: 1px solid var(--line-soft);
+    cursor: zoom-in;
+    display: block;
+}
+
+/* The lightbox: the picture at its full size, everything else an exit. */
+.lightbox {
+    position: fixed;
+    inset: 0;
+    z-index: var(--z-menu);
+    display: grid;
+    place-items: center;
+    background: rgb(var(--pill-rgb) / 0.94);
+    animation: fade-in var(--dur-fast) var(--ease);
+}
+.lightbox img {
+    max-width: 94vw;
+    max-height: 92vh;
+    border-radius: var(--r-2);
+    box-shadow: var(--shadow-3);
+}
+.lightbox-close {
+    position: absolute;
+    top: calc(var(--titlebar-h) + var(--s-2));
+    right: var(--s-4);
+    width: 40px;
+    height: 40px;
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+    background: var(--surface-2);
+    color: var(--ink);
+    font-size: var(--t-lg);
+}
+.lightbox-close:hover { background: var(--surface-3); }
+
+/* Click-to-play video embeds: a card until asked, the provider's player after. */
+.video-embed {
+    position: relative;
+    width: min(480px, 100%);
+    aspect-ratio: 16 / 9;
+    margin-top: var(--s-2);
+    border-radius: var(--r-2);
+    overflow: hidden;
+    background: var(--video-backdrop);
+    border: 1px solid var(--line-soft);
+    cursor: pointer;
+    display: grid;
+    place-items: center;
+}
+.embed-thumb { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.embed-veil { position: absolute; inset: 0; background: var(--scrim); opacity: 0.55; transition: opacity var(--dur-fast) var(--ease); }
+.video-embed:hover .embed-veil { opacity: 0.3; }
+.embed-play {
+    position: relative;
+    width: 56px;
+    height: 56px;
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+    background: var(--accent);
+    color: var(--on-accent);
+    box-shadow: var(--shadow-accent);
+    transition: transform var(--dur-fast) var(--ease);
+}
+.embed-play svg { width: 22px; height: 22px; }
+.video-embed:hover .embed-play { transform: scale(1.08); }
+.embed-provider {
+    position: absolute;
+    left: 10px;
+    bottom: 8px;
+    padding: 2px 8px;
+    border-radius: var(--r-pill);
+    background: var(--scrim);
+    color: var(--on-accent);
+    font-size: var(--t-xs);
+    font-weight: 700;
+}
+.video-embed.playing { cursor: default; }
+.video-embed iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+
+/* The chip above the composer: the picture riding the next message. */
+#attachStrip:empty { display: none; }
+#attachStrip { padding: 0 var(--s-5) var(--s-1); }
+.attach-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--s-2);
+    padding: var(--s-1) var(--s-2);
+    border-radius: var(--r-2);
+    background: var(--surface-2);
+    border: 1px solid var(--line-soft);
+    font-size: var(--t-sm);
+    color: var(--ink-dim);
+    max-width: 320px;
+}
+.attach-chip img { width: 34px; height: 34px; object-fit: cover; border-radius: var(--r-1); }
+.attach-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attach-chip button { color: var(--ink-faint); padding: 2px 6px; border-radius: var(--r-1); }
+.attach-chip button:hover { color: var(--bad); background: var(--surface-3); }
+.attach-chip.error { color: var(--bad-text); border-color: rgb(var(--bad-rgb) / 0.4); }
+
+/* The composer's emoji palette: floats above the input, eight to a row. */
+.emoji-pop {
+    position: absolute;
+    right: var(--s-3);
+    bottom: calc(100% + var(--s-2));
+    z-index: var(--z-popover);
+    display: grid;
+    grid-template-columns: repeat(8, 36px);
+    gap: 2px;
+    padding: var(--s-2);
+    background: var(--surface-2);
+    border: 1px solid var(--line-strong);
+    border-radius: var(--r-3);
+    box-shadow: var(--shadow-2);
+}
+.emoji-pop button {
+    width: 36px;
+    height: 36px;
+    display: grid;
+    place-items: center;
+    border-radius: var(--r-1);
+    font-size: 19px;
+    line-height: 1;
+}
+.emoji-pop button:hover { background: var(--accent-tint-hi); transform: scale(1.1); }
+
+/* ── Touch ────────────────────────────────────────────────────────────────── */
+
+/* Keyed on what the device can DO, not on which build this is: a phone browser needs every
+ * rule here as much as the Android app does, and a laptop with a touchscreen gets the bigger
+ * targets without losing its hover. Last in the file on purpose — each rule below replaces a
+ * hover rule declared above it at the same specificity, and the later one wins. */
+
+/* Nothing can be hovered, so everything that waited for a pointer to come close is shown.
+ * Each of these was unreachable by touch: a control at opacity 0 still takes the tap, but
+ * nobody taps what they cannot see. */
+@media (hover: none) {
+    .room-chat,
+    .msg.continued .msg-gutter-time,
+    .preview-dismiss,
+    .adm-row .adm-actions,
+    .bubble-label { opacity: 1; }
+    .reaction.add { opacity: 0.8; }
+    /* An unwatched tile's one verb is the tile's whole point. */
+    .tile .watch-veil { opacity: 1; }
+    .tile .watch-btn { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+    /* A watched tile's controls cover the picture, so they come for a few seconds after a
+       tap (room/index.js adds .touched) and then get out of the way again. */
+    .tile.touched .stream-pill,
+    .tile.touched .tile-bar { opacity: 1; transition-delay: 0s; }
+    /* A long press on a person opens their menu; it must not select their name or raise
+       the platform's own text menu on top of it. */
+    .room-person { user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+}
+
+/* A fingertip, not a cursor. */
+@media (pointer: coarse) {
+    .round-btn, .icon-btn, .composer-btn, .pill-btn {
+        min-width: var(--tap-min);
+        min-height: var(--tap-min);
+    }
+    .room-row, .nav-item, .peer-menu-item, .self-menu-item, .mention-row, .dm-search-row {
+        min-height: var(--tap-min);
+    }
+    .room-chat { width: var(--tap-min); height: var(--tap-min); }
+    .reaction { min-height: calc(var(--tap-min) - var(--s-2)); }
+
+    /* The pickers fill the composer's width and wrap, rather than running off the screen. */
+    .emoji-pop {
+        left: 0;
+        right: 0;
+        grid-template-columns: repeat(auto-fill, minmax(var(--tap-min), 1fr));
+    }
+    .emoji-pop button { width: auto; height: var(--tap-min); }
+    .react-pick { flex-wrap: wrap; white-space: normal; max-width: calc(100vw - var(--s-7)); border-radius: var(--r-3); }
+    .react-pick button { width: var(--tap-min); height: var(--tap-min); }
+
+    /* Every control a watched stream has, in a pill no wider than its picture: it scrolls
+       sideways instead of hanging off both edges of a phone-sized tile. */
+    .stream-pill { max-width: calc(100% - var(--s-4)); overflow-x: auto; scrollbar-width: none; }
+}
+
+/* Shortcuts are keys, and a touchscreen has none to press: the settings that capture one are
+ * not offered where they could never be used. Push-to-talk itself stays — its button is the
+ * key on a phone (see .round-btn.ptt). */
+@media (hover: none) and (pointer: coarse) {
+    .needs-keyboard { display: none; }
+}
+
+/* A person's menu on a phone: a sheet along the bottom, within reach of the thumb that
+ * opened it, rather than a floating card wherever the finger happened to land. */
+.peer-menu.as-sheet {
+    left: 0;
+    right: 0;
+    top: auto;
+    bottom: 0;
+    width: auto;
+    max-height: 72dvh;
+    overflow-y: auto;
+    /* Above the gesture bar, which a sheet along the bottom would otherwise sit under. */
+    padding-bottom: calc(var(--s-4) + var(--safe-bottom));
+    border-radius: var(--r-4) var(--r-4) 0 0;
+    border-bottom: 0;
+    animation: sheet-up var(--dur) var(--ease);
+}
+@keyframes sheet-up {
+    from { transform: translateY(24px); opacity: 0; }
+    to { transform: none; opacity: 1; }
+}

@@ -1,0 +1,30 @@
+node_modules/
+dist/
+dist-electron/
+dist-mobile/
+release/
+.vite/
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.log
+.env
+.env.*
+!.env.example
+
+# Packaging output. The installer is published to GitHub Releases, not committed.
+release/
+build/*.bmp
+
+# The process-audio capture sidecar is compiled during packaging (npm run build:native), not
+# committed — the release machine has the C++ toolchain, and a binary does not belong in git.
+native/audio-capture/weave-audio-capture.exe
+native/audio-capture/*.obj
+
+# The Android release key and its passwords, should either ever be copied into the tree.
+# They belong in ~/.weave, outside every repository: whoever holds the key can publish an
+# update that every installed copy of the app will accept.
+*.jks
+*.keystore
+android-signing.properties

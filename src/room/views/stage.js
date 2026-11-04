@@ -1,0 +1,274 @@
+// The stage: everyone's video, above the chat that never leaves.
+//
+// Tiles for every live camera and screen in the room, yours included. Watching is opt-in
+// and plural: every stream you choose shares the big area, and a spotlight makes one of them
+// THE picture with the rest in a strip — because a shared screen is usually the thing, but
+// not always the only one. The chat stays mounted below whatever happens here:
+// that is the requirement, and it is why the stage is a region of the room rather than a
+// mode that replaces it.
+//
+// Pure markup. Streams are attached by the controller AFTER paint, because a view that
+// touched srcObject would not be a view.
+
+import { esc } from '../../ui/dom.js';
+import { icons } from '../icons.js';
+import { userHue } from '../../ui/hue.js';
+import {
+    SHARE_QUALITIES, SHARE_CONTENT, DEFAULT_SHARE_QUALITY, DEFAULT_SHARE_CONTENT,
+} from '../../media/presets.js';
+
+export const tileKey = (cid, slot) => `${cid}:${slot}`;
+
+/**
+ * Order: focused first is not needed (CSS handles focus), but screens before cameras —
+ * a screen is content, a camera is presence — and self last within each kind, because
+ * your own face is the least informative thing on your screen.
+ */
+export function orderTiles(tiles) {
+    const rank = (t) => (t.slot === 'screen' ? 0 : 1) * 2 + (t.self ? 1 : 0);
+    return [...tiles].sort((a, b) => rank(a) - rank(b) || String(a.key).localeCompare(String(b.key)));
+}
+
+/** The identity chip every thumbnail wears: mini avatar, kind glyph, name. */
+const identityChip = (t) => `
+  <span class="tile-chip">
+    <span class="tile-chip-face" style="--av: hsl(${esc(userHue(t.chipName ?? t.label))}, 55%, 40%)">${esc(initialsOf(t.chipName ?? t.label))}</span>
+    ${t.slot === 'screen' ? icons.screen : icons.camera}
+    <span>${esc(t.label)}</span>
+  </span>`;
+
+const initialsOf = (name) => String(name ?? '?').trim().slice(0, 2).toUpperCase();
+
+/**
+ * A watched stream's floating pill: listen controls, fullscreen, the way out — and, when
+ * there is more than one stream to choose between, the spotlight. `spot` is null when there
+ * is nothing to choose between, otherwise whether THIS tile holds the spotlight.
+ */
+const streamPill = (t, canReport = false, spot = null) => `
+  <span class="stream-pill">
+    ${canReport ? `
+    <span class="pill-report-label" aria-hidden="true">Stream quality</span>
+    <button type="button" class="pill-btn pill-report good" data-report-good
+            title="Report stream quality: good" aria-label="Report this stream's quality as good">${icons.thumbUp}<span>Good</span></button>
+    <button type="button" class="pill-btn pill-report bad" data-report-bad
+            title="Report stream quality: bad" aria-label="Report this stream's quality as bad">${icons.thumbDown}<span>Bad</span></button>
+    <span class="pill-sep" aria-hidden="true"></span>` : ''}
+    ${t.self || !t.audio ? '' : `
+    <button type="button" class="pill-btn" data-listen-mute
+            title="${t.audio.muted ? 'Unmute for you' : 'Mute for you'}"
+            aria-pressed="${t.audio.muted ? 'true' : 'false'}"
+            aria-label="${t.audio.muted ? 'Unmute this stream for you' : 'Mute this stream for you'}">
+      ${t.audio.muted ? icons.speakerOff : icons.speaker}
+    </button>
+    <input type="range" class="pill-volume" data-listen-volume min="0" max="200"
+           value="${Math.round((t.audio.volume ?? 1) * 100)}"
+           aria-label="Volume of this stream, for you only">
+    <span class="pill-sep" aria-hidden="true"></span>`}
+    ${spot === null ? '' : `
+    <button type="button" class="pill-btn" data-spotlight
+            title="${spot ? 'Back to the grid' : 'Spotlight — make this one big'}"
+            aria-pressed="${spot ? 'true' : 'false'}"
+            aria-label="${spot ? 'Show every watched stream side by side' : 'Spotlight this stream'}">${spot ? icons.grid : icons.spotlight}</button>`}
+    <button type="button" class="pill-btn" data-tile-full
+            title="Fullscreen — press again to leave" aria-label="Toggle fullscreen">${icons.expand}</button>
+    <span class="pill-sep" aria-hidden="true"></span>
+    <button type="button" class="pill-btn pill-stop" data-stop-watching
+            title="Stop watching" aria-label="Stop watching this stream">
+      <span aria-hidden="true">✕</span><span class="pill-word">Stop watching</span>
+    </button>
+  </span>`;
+
+/**
+ * What an unwatched stream shows instead of pictures: stripes and a glyph for a screen,
+ * the person's face-circle for a camera. Nothing is being received — the placeholder IS
+ * the indication that something could be. Hovering offers the one verb that matters.
+ */
+const placeholder = (t) => (t.frame ? `
+    <div class="ph ph-still" aria-hidden="true">
+      <img class="ph-blur" src="${esc(t.frame)}" alt="">
+    </div>` : t.slot === 'screen' ? `
+    <div class="ph ph-screen" aria-hidden="true">${icons.screen}</div>` : `
+    <div class="ph ph-cam" aria-hidden="true">
+      <span class="ph-face" style="--av: hsl(${esc(userHue(t.chipName ?? t.label))}, 55%, 40%)">${esc(initialsOf(t.chipName ?? t.label))}</span>
+    </div>`);
+
+/**
+ * How many OTHER people's streams can be watched at once — the web app's limit. Each one is
+ * a full-rate consumer on the way down, and past this the downlink and the decoder give out
+ * before the person runs out of things to look at. Your own tiles are local and do not count.
+ */
+export const MAX_WATCHED = 6;
+
+const watchButton = (t, limited = false) => `
+    <span class="watch-veil" aria-hidden="true"></span>
+    <button type="button" class="watch-btn" data-watch-tile="${esc(t.key)}"
+            ${limited ? `disabled title="Watching ${MAX_WATCHED} streams — stop one to watch another"` : ''}
+            aria-label="Watch ${esc(t.label)}">${icons.expand}<span>Watch</span></button>`;
+
+/**
+ * One tile, in one of three places:
+ *   main  — watched, in the big area: the LIVE badge and the pill
+ *   strip — watched, beside a spotlight: live pictures, the identity chip, click to swap
+ *   else  — not watched: the placeholder (or your own camera's mirror) and the Watch verb
+ */
+const tile = (t, { main = false, spot = null, canReport = false, limited = false } = {}) => {
+    const focused = main;   // `.focused` is the big-area styling the CSS already knows
+    return `
+  <div class="tile${focused ? ' focused' : ''}${t.watched ? ' watched' : ''}${t.self ? ' self' : ''}${t.live ? '' : ' idle'}"
+       data-tile="${esc(t.key)}" role="${focused ? 'group' : 'button'}" tabindex="${focused ? '-1' : '0'}"
+       aria-label="${esc(t.label)}${t.slot === 'screen' ? "'s screen" : ''}${focused ? ', watching' : ''}">
+    ${t.live ? `<video autoplay playsinline ${t.self ? 'muted' : ''}></video>` : placeholder(t)}
+    ${focused ? `
+    <span class="live-badge"><i aria-hidden="true"></i>LIVE · ${esc(t.label)}</span>
+    ${streamPill(t, canReport, spot)}` : `
+    ${t.slot === 'screen' ? '<span class="live-badge small"><i aria-hidden="true"></i>LIVE</span>' : ''}
+    ${identityChip(t)}
+    ${t.watched ? '' : watchButton(t, limited && !t.self)}`}
+  </div>`;
+};
+
+/** How many thumbnails ride the carousel before it earns scroll buttons. */
+export const STRIP_VISIBLE = 4;
+
+/**
+ * The stage. Empty tiles array renders nothing at all — the room looks exactly as it
+ * always did until the first camera or screen arrives.
+ *
+ * Nothing watched: a compact row of thumbnails, each offering Watch. Something watched: the
+ * big area holds every watched stream side by side — or, with a spotlight, just that one,
+ * and the other watched streams keep playing as thumbnails in the strip beside the
+ * unwatched ones. A spotlight is only honoured on a watched tile, so one that has gone falls
+ * back to the grid rather than to a black box.
+ */
+export function stageView({
+    tiles = [], spotlight = null, heightPx = null, canReport = false, watchLimitReached = false,
+} = {}) {
+    if (!tiles.length) return '';
+    const ordered = orderTiles(tiles);
+    const watched = ordered.filter((t) => t.watched);
+    const spotKey = watched.length > 1 && watched.some((t) => t.key === spotlight) ? spotlight : null;
+    const limited = Boolean(watchLimitReached);
+    // Choosing between streams needs more than one stream to choose between.
+    const spotFor = (t) => (watched.length > 1 ? t.key === spotKey : null);
+
+    if (!watched.length) {
+        return `
+    <section class="stage" aria-label="Live video"${heightPx ? ` style="height: ${Math.round(heightPx)}px"` : ''}>
+      <div class="stage-grid" data-count="${Math.min(ordered.length, 9)}">
+        ${ordered.map((t) => tile(t, { canReport, limited })).join('')}
+      </div>
+    </section>`;
+    }
+
+    const inMain = spotKey ? watched.filter((t) => t.key === spotKey) : watched;
+    const thumbs = ordered.filter((t) => !inMain.includes(t));
+    return `
+    <section class="stage has-focus" aria-label="Live video"${heightPx ? ` style="height: ${Math.round(heightPx)}px"` : ''}>
+      <div class="stage-main">${spotKey
+        ? tile(inMain[0], { main: true, spot: spotFor(inMain[0]), canReport })
+        : `
+        <div class="watch-grid" data-count="${Math.min(inMain.length, 9)}">
+          ${inMain.map((t) => tile(t, { main: true, spot: spotFor(t), canReport })).join('')}
+        </div>`}
+      </div>
+      ${thumbs.length ? `
+      <div class="strip-shell${thumbs.length > STRIP_VISIBLE ? ' scrollable' : ''}">
+        ${thumbs.length > STRIP_VISIBLE ? `
+        <button type="button" class="strip-nav" data-strip-nav="-1" aria-label="Earlier streams">‹</button>` : ''}
+        <div class="stage-strip">${thumbs.map((t) => tile(t, { canReport, limited })).join('')}</div>
+        ${thumbs.length > STRIP_VISIBLE ? `
+        <button type="button" class="strip-nav" data-strip-nav="1" aria-label="More streams">›</button>` : ''}
+      </div>` : ''}
+    </section>
+    <div class="stage-divider" data-stage-divider role="separator" aria-orientation="horizontal"
+         title="Drag to resize"><span></span></div>`;
+}
+
+/* ── choosing what to share ───────────────────────────────────────────────── */
+
+/**
+ * How to share, asked every time, just before the screen picker.
+ *
+ * A game and a spreadsheet are different streams — one wants every frame, the other every
+ * glyph — and a setting chosen once in a dialog nobody reopens gets one of them wrong. So the
+ * two choices are made at the moment they matter, pre-set to whatever was chosen last.
+ *
+ * A real form with real radio groups, as the room browser's kind picker is: arrow keys move
+ * within a group, the checked card is the state, and Enter submits. Nothing is selected by a
+ * click handler that could fall out of step with what the screen shows. Nothing starts until
+ * "Choose screen" — unlike the web app, where clicking a quality started the share at once
+ * and the content type had to be picked BEFORE it, below it.
+ */
+export function shareSetupView({ quality = DEFAULT_SHARE_QUALITY, content = DEFAULT_SHARE_CONTENT } = {}) {
+    const card = (name, key, entry, checked) => `
+          <label class="kind-card share-option">
+            <input type="radio" name="${name}" value="${esc(key)}" ${checked ? 'checked' : ''}>
+            <span class="kind-name">${esc(entry.title)}</span>
+            <span class="kind-hint">${esc(entry.sub)}</span>
+          </label>`;
+
+    return `
+    <form class="share-picker share-setup" data-share-setup>
+      <header class="browser-head">
+        <div>
+          <h2 class="panel-title">Share your screen</h2>
+          <p class="panel-lead">Higher quality needs more upload and more of your computer — and
+            more again for each person watching. You will pick the screen or window next.</p>
+        </div>
+        <span class="browser-spacer"></span>
+        <button type="button" class="icon-btn" data-share-cancel aria-label="Cancel">✕</button>
+      </header>
+
+      <h3 class="panel-section" id="shareQualityLabel">Quality</h3>
+      <div class="kind-pick share-qualities" role="radiogroup" aria-labelledby="shareQualityLabel">
+        ${Object.entries(SHARE_QUALITIES).map(([key, entry]) => card('quality', key, entry, key === quality)).join('')}
+      </div>
+
+      <h3 class="panel-section" id="shareContentLabel">What are you sharing?</h3>
+      <div class="kind-pick" role="radiogroup" aria-labelledby="shareContentLabel">
+        ${Object.entries(SHARE_CONTENT).map(([key, entry]) => card('content', key, entry, key === content)).join('')}
+      </div>
+
+      <div class="create-actions share-setup-actions">
+        <button type="button" class="btn" data-share-cancel>Cancel</button>
+        <button type="submit" class="btn primary" data-share-go data-initial-focus>Choose screen</button>
+      </div>
+    </form>`;
+}
+
+/**
+ * The desktop share picker. Thumbnails come from the main process's own capture of the
+ * screens — trusted pixels — but every NAME is a window title, which is arbitrary text
+ * from arbitrary apps, so it is escaped like anything else.
+ */
+export function sharePickerView({ sources = [] } = {}) {
+    const screens = sources.filter((s) => s.kind === 'screen');
+    const windows = sources.filter((s) => s.kind !== 'screen');
+    const card = (s) => `
+      <button type="button" class="share-source" data-share-source="${esc(s.id)}">
+        <img src="${esc(s.thumb)}" alt="">
+        <span class="share-name">${esc(s.name)}</span>
+      </button>`;
+
+    return `
+    <div class="share-picker">
+      <header class="browser-head">
+        <div>
+          <h2 class="panel-title">Share your screen</h2>
+          <p class="panel-lead">Everyone in the room will see it. Chat stays alongside.</p>
+        </div>
+        <span class="browser-spacer"></span>
+        <button type="button" class="icon-btn" data-share-cancel aria-label="Cancel">✕</button>
+      </header>
+
+      ${screens.length ? `<h3 class="panel-section">Screens</h3>
+      <div class="share-grid">${screens.map(card).join('')}</div>` : ''}
+      ${windows.length ? `<h3 class="panel-section">Windows</h3>
+      <div class="share-grid">${windows.map(card).join('')}</div>` : ''}
+
+      <label class="check-row share-audio">
+        <input type="checkbox" id="shareAudio" checked>
+        <span>Share computer audio <em>— game sound, music, video</em></span>
+      </label>
+    </div>`;
+}

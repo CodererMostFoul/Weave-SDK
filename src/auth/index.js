@@ -1,0 +1,568 @@
+// The authentication flow.
+//
+// Five screens and the moves between them: sign in, register, three-step password reset,
+// and (desktop only) server management.
+//
+// The one rule that shapes the reset flow: step one always advances, even for a username
+// with no account. The server returns a plausible question for an unknown name on purpose,
+// so that this endpoint cannot be used to discover who has an account on an invite-only
+// server. The client must not undo that by checking whether the account exists first, or
+// by wording step two as though it has been confirmed.
+
+import * as views from './views.js';
+import { createApi, ApiError } from '../lib/api.js';
+import { discover, OUTCOME, CLIENT_PROTOCOL } from '../server/discover.js';
+import { displayAddress } from '../server/address.js';
+import { platform } from '../platform/index.js';
+import {
+    listServers, activeServer, setActive, rememberServer, forgetServer, getServer,
+} from '../server/store.js';
+import {
+    $, $$, on, html, safe, clearErrors, setFieldError, setFormMessage, setBusy, passwordStrength,
+} from '../ui/dom.js';
+
+export function createAuth({ mount, onSignedIn }) {
+    // Carried between reset steps in memory only. It contains an answer to a security
+    // question, so it must never reach storage or a URL.
+    let reset = null;
+    let cachedQuestions = null;
+
+    /**
+     * What has been typed on the sign-in form but not yet submitted.
+     *
+     * Nipping into the server settings and coming back should not cost you your username
+     * and password. Every screen is re-rendered from scratch on navigation, so without this
+     * the fields come back empty and it looks like the app threw the input away — which it
+     * did.
+     *
+     * In memory for the lifetime of this window only. It is never written to storage, never
+     * put in the markup, and it is cleared the moment a sign-in succeeds.
+     */
+    let draft = { username: '', password: '' };
+
+    const server = () => activeServer();
+    const apiFor = (origin) => createApi({ origin });
+
+    function render(markup) {
+        mount.innerHTML = '';
+        mount.append(html(markup));
+        wire();
+    }
+
+    /* ── routing ─────────────────────────────────────────────────────────── */
+
+    /**
+     * Which call to show() is the latest. Register waits on the server for its questions,
+     * so two calls can be in flight at once — at launch from an invite link, the first paint
+     * and the link's own navigation both are — and whichever finished first used to render
+     * and take the invite code, leaving the later render with an empty field. Now only the
+     * latest call renders anything.
+     */
+    let latestShow = 0;
+
+    async function show(route) {
+        // A desktop app with no server cannot sign in to anything, so it opens on the
+        // server screen instead of a login form that could not possibly work.
+        if (platform.canChooseServer && !server() && route !== 'servers') {
+            return show('servers');
+        }
+        const call = ++latestShow;
+
+        switch (route) {
+            case 'register': {
+                const info = server();
+                const list = await questions();
+                if (call !== latestShow) return;
+                render(views.register({
+                    questions: list,
+                    instanceName: info?.lastSeen?.name ?? null,
+                }));
+                // An invite link landed here: the code it carried goes straight into the
+                // field, once. Session-scoped so a stale code never resurfaces days later.
+                try {
+                    const pending = sessionStorage.getItem('weave:pending-invite');
+                    if (pending) {
+                        sessionStorage.removeItem('weave:pending-invite');
+                        const input = mount.querySelector('#inviteCode');
+                        if (input && !input.value) input.value = pending;
+                    }
+                } catch { /* storage can be unavailable; typing still works */ }
+                break;
+            }
+            case 'forgot':
+                reset = null;
+                render(views.forgotUsername());
+                break;
+            case 'servers':
+                render(views.servers({
+                    list: listServers(),
+                    activeId: server()?.id ?? null,
+                    firstRun: listServers().length === 0,
+                    servedElsewhere: platform.target === 'browser',
+                }));
+                break;
+            case 'signin':
+            default: {
+                const current = server();
+                render(views.signIn({
+                    servers: listServers(),
+                    activeId: current?.id ?? null,
+                    instanceName: current?.lastSeen?.name ?? null,
+                }));
+                break;
+            }
+        }
+    }
+
+    async function questions() {
+        if (cachedQuestions) return cachedQuestions;
+        try {
+            const { questions: list } = await apiFor(server().origin).securityQuestions();
+            cachedQuestions = list;
+        } catch {
+            // Registration is still possible without the list only if the server is
+            // unreachable, in which case the form will fail anyway — so an empty list here
+            // is honest rather than a fallback that pretends.
+            cachedQuestions = [];
+        }
+        return cachedQuestions;
+    }
+
+    /* ── wiring ──────────────────────────────────────────────────────────── */
+
+    function wire() {
+        $$('[data-nav]', mount).forEach((link) => {
+            link.addEventListener('click', (e) => {
+                e.preventDefault();
+                show(link.getAttribute('href').replace('#/', ''));
+            });
+        });
+
+        on(mount, '[data-open-servers]', 'click', () => show('servers'));
+
+        const picker = $('.server-pick', mount);
+        if (picker) {
+            picker.addEventListener('change', () => {
+                setActive(picker.value);
+                show('signin');
+            });
+        }
+
+        wireStrength();
+        wireSignIn();
+        wireRegister();
+        wireForgot();
+        wireServers();
+    }
+
+    function wireStrength() {
+        const input = $('input[name="password"][autocomplete="new-password"], input[name="newPassword"]', mount);
+        const meter = $('.strength', mount);
+        const label = $('.strength-label', mount);
+        if (!input || !meter) return;
+
+        input.addEventListener('input', () => {
+            const { score, label: text } = passwordStrength(input.value);
+            $$('i', meter).forEach((bar, i) => bar.classList.toggle('on', i < score));
+            meter.dataset.score = String(score);
+            if (label) label.textContent = input.value ? text : 'At least 10 characters.';
+        });
+    }
+
+    /* ── sign in ─────────────────────────────────────────────────────────── */
+
+    /**
+     * Put the draft back into the fields.
+     *
+     * Assigned as properties rather than rendered into the markup: a password does not
+     * belong in an HTML attribute, where it would sit in the DOM as text and in any
+     * serialisation of it.
+     */
+    async function restoreDraft(form) {
+        if (!form) return;
+
+        // Saved credentials first, then anything typed this session on top — the draft is
+        // more recent by definition, so it wins.
+        const target = server();
+        if (target && platform.credentials.available) {
+            const saved = await platform.credentials.get(target.id).catch(() => null);
+            if (saved) {
+                form.username.value = saved.username ?? '';
+                form.password.value = saved.password ?? '';
+                if (form.remember) form.remember.checked = true;
+            }
+        }
+
+        if (draft.username) form.username.value = draft.username;
+        if (draft.password) form.password.value = draft.password;
+
+        form.addEventListener('input', () => {
+            draft = { username: form.username.value, password: form.password.value };
+        });
+    }
+
+    function wireSignIn() {
+        const form = $('#signInForm', mount);
+        if (!form) return;
+
+        restoreDraft(form);
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            clearErrors(form);
+
+            const button = $('button[type="submit"]', form);
+            const username = form.username.value.trim();
+            const password = form.password.value;
+            const autoJoin = form.autoJoin.checked;
+
+            if (!username || !password) {
+                setFormMessage(form, 'Enter your username and password.');
+                return;
+            }
+
+            setBusy(button, true, 'Signing in…');
+            try {
+                const target = server();
+                const api = apiFor(target.origin);
+                const result = await api.login(username, password);
+
+                // An administrator reset this password. The credentials were CORRECT —
+                // that is what earned the ticket — but there is no session until the
+                // user chooses a new password, so this flow forks here.
+                if (result.resetRequired) {
+                    setBusy(button, false);
+                    showResetRequired({
+                        api,
+                        target,
+                        ticket: result.ticket,
+                        username: result.username ?? username,
+                        remember: Boolean(form.remember?.checked),
+                        autoJoin,
+                    });
+                    return;
+                }
+
+                api.setToken(result.token);
+                // Scoped to this server: a client that can reach several must never carry one
+                // server's credentials to another.
+                await platform.tokens.set(target.id, result.token).catch(() => {});
+
+                // Only once the credentials have actually been shown to work. Saving them
+                // on submit would persist a typo and re-fill it on every future launch.
+                if (form.remember?.checked) {
+                    await platform.credentials.set(target.id, username, password).catch(() => {});
+                } else {
+                    // Unticking is how you forget, so it has to clear what was saved before.
+                    await platform.credentials.clear(target.id).catch(() => {});
+                }
+
+                draft = { username: '', password: '' };
+                onSignedIn({ api, user: result.user, token: result.token, server: target, autoJoin });
+            } catch (err) {
+                setBusy(button, false);
+                if (err instanceof ApiError && err.field) {
+                    setFieldError(form, err.field, err.message);
+                } else {
+                    setFormMessage(form, err.message);
+                }
+            }
+        });
+    }
+
+    /**
+     * The forced-reset card. Renders over the sign-in form; on success it continues
+     * exactly like a normal sign-in, including saving the NEW password when Remember
+     * me was ticked — remembering the dead one would lock them out at next launch.
+     */
+    function showResetRequired({ api, target, ticket, username, remember, autoJoin }) {
+        render(views.chooseNewPassword({
+            username,
+            instanceName: target?.lastSeen?.name ?? null,
+        }));
+        const form = $('#resetRequiredForm', mount);
+        if (!form) return;
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            clearErrors(form);
+            const button = $('button[type="submit"]', form);
+            const password = form.password.value;
+            if (password !== form.confirm.value) {
+                setFieldError(form, 'confirm', 'These do not match.');
+                return;
+            }
+
+            setBusy(button, true, 'Saving…');
+            try {
+                const result = await api.request('POST', '/api/auth/complete-reset', {
+                    body: { ticket, password },
+                });
+                api.setToken(result.token);
+                await platform.tokens.set(target.id, result.token).catch(() => {});
+                if (remember) {
+                    await platform.credentials.set(target.id, username, password).catch(() => {});
+                }
+                onSignedIn({ api, user: result.user, token: result.token, server: target, autoJoin });
+            } catch (err) {
+                setBusy(button, false);
+                if (err instanceof ApiError && err.status === 401) {
+                    // The ticket is single-use and short-lived; the honest fix is one
+                    // more sign-in, which mints a fresh one.
+                    await show('signin');
+                    const signInForm = $('#signInForm', mount);
+                    setFormMessage(signInForm, err.message ?? 'That took too long — sign in again.');
+                    return;
+                }
+                if (err instanceof ApiError && err.field) setFieldError(form, err.field, err.message);
+                else setFormMessage(form, err.message);
+            }
+        });
+    }
+
+    /* ── register ────────────────────────────────────────────────────────── */
+
+    function wireRegister() {
+        const form = $('#registerForm', mount);
+        if (!form) return;
+
+        // Invite codes get pasted in every shape. Reformat as they type rather than
+        // rejecting what they pasted.
+        const code = form.inviteCode;
+        code.addEventListener('input', () => {
+            const clean = code.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 16);
+            const grouped = clean.match(/.{1,4}/g)?.join('-') ?? '';
+            if (grouped !== code.value) {
+                const atEnd = code.selectionStart === code.value.length;
+                code.value = grouped;
+                if (atEnd) code.setSelectionRange(grouped.length, grouped.length);
+            }
+        });
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            clearErrors(form);
+            const button = $('button[type="submit"]', form);
+
+            const payload = {
+                inviteCode: form.inviteCode.value.trim(),
+                username: form.username.value.trim(),
+                displayName: form.displayName.value.trim() || undefined,
+                password: form.password.value,
+                securityQuestion: form.securityQuestion.value,
+                securityAnswer: form.securityAnswer.value.trim(),
+            };
+
+            for (const [field, label] of [
+                ['inviteCode', 'Enter your invite code.'],
+                ['username', 'Choose a username.'],
+                ['password', 'Choose a password.'],
+                ['securityQuestion', 'Pick a security question.'],
+                ['securityAnswer', 'Answer your security question.'],
+            ]) {
+                if (!payload[field]) { setFieldError(form, field === 'securityQuestion' ? 'securityQuestion' : field, label); return; }
+            }
+
+            setBusy(button, true, 'Creating account…');
+            try {
+                const target = server();
+                const api = apiFor(target.origin);
+                const result = await api.register(payload);
+                api.setToken(result.token);
+                // Scoped to this server: a client that can reach several must never carry one
+                // server's credentials to another.
+                await platform.tokens.set(target.id, result.token).catch(() => {});
+                onSignedIn({ api, user: result.user, token: result.token, server: target, autoJoin: true });
+            } catch (err) {
+                setBusy(button, false);
+                if (err instanceof ApiError && err.field && setFieldError(form, err.field, err.message)) return;
+                setFormMessage(form, err.message);
+            }
+        });
+    }
+
+    /* ── forgot password ─────────────────────────────────────────────────── */
+
+    function wireForgot() {
+        const form = $('#forgotForm', mount);
+        if (!form) return;
+
+        const step = form.dataset.step;
+        const button = $('button[type="submit"]', form);
+
+        if (step === 'reset') wireMatch(form, button);
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            clearErrors(form);
+
+            if (step === 'username') {
+                const username = form.username.value.trim();
+                if (!username) { setFieldError(form, 'username', 'Enter your username.'); return; }
+
+                setBusy(button, true, 'Checking…');
+                try {
+                    const { question } = await apiFor(server().origin).recoveryQuestion(username);
+                    // Always advances. A username with no account gets a question too —
+                    // that is the server refusing to reveal who has an account, and the
+                    // client must not leak it back by behaving differently here.
+                    reset = { username, question };
+                    render(views.forgotAnswer({ question, username }));
+                } catch (err) {
+                    setBusy(button, false);
+                    setFormMessage(form, err.message);
+                }
+                return;
+            }
+
+            if (step === 'answer') {
+                const answer = form.answer.value.trim();
+                if (!answer) { setFieldError(form, 'answer', 'Enter your answer.'); return; }
+
+                // Not verified here: the server checks the answer and the new password in
+                // one call, so there is nothing to check against yet. Carrying the answer
+                // forward keeps it to a single round trip and avoids a half-authenticated
+                // state that would need its own token.
+                reset = { ...reset, answer };
+                render(views.forgotReset({
+                    username: form.username.value,
+                    questionId: form.questionId.value,
+                    answer,
+                }));
+                return;
+            }
+
+            const newPassword = form.newPassword.value;
+            const confirm = form.confirmPassword.value;
+
+            if (newPassword.length < 10) {
+                setFieldError(form, 'newPassword', 'Use at least 10 characters.');
+                return;
+            }
+            if (newPassword !== confirm) {
+                setFieldError(form, 'confirmPassword', "These don't match.");
+                return;
+            }
+
+            setBusy(button, true, 'Updating…');
+            try {
+                await apiFor(server().origin).recover({
+                    username: form.username.value,
+                    questionId: form.questionId.value,
+                    answer: form.answer.value,
+                    newPassword,
+                });
+                reset = null;
+                await show('signin');
+                const signInForm = $('#signInForm', mount);
+                setFormMessage(signInForm, 'Password updated. Sign in with your new password.', 'ok');
+                if (signInForm) signInForm.username.focus();
+            } catch (err) {
+                setBusy(button, false);
+                // A wrong answer only surfaces here, because that is the only call that
+                // checks it. Send them back to the question rather than stranding them on
+                // a password form that will keep failing.
+                if (err instanceof ApiError && err.status === 401) {
+                    const { username, question } = reset;
+                    render(views.forgotAnswer({ question, username }));
+                    setFormMessage($('#forgotForm', mount), 'That answer is not correct.');
+                    return;
+                }
+                setFormMessage(form, err.message);
+            }
+        });
+    }
+
+    /** Live match indicator, and the submit button follows it. */
+    function wireMatch(form, button) {
+        const a = form.newPassword;
+        const b = form.confirmPassword;
+        const label = $('.match-label', form);
+
+        const check = () => {
+            const long = a.value.length >= 10;
+            const same = a.value === b.value;
+            const filled = b.value.length > 0;
+
+            if (!filled) {
+                label.textContent = '';
+                label.className = 'field-help match-label';
+            } else if (same) {
+                label.textContent = '✓ Passwords match';
+                label.className = 'field-help match-label ok';
+            } else {
+                label.textContent = "✗ Passwords don't match yet";
+                label.className = 'field-help match-label bad';
+            }
+            button.disabled = !(long && same && filled);
+        };
+
+        a.addEventListener('input', check);
+        b.addEventListener('input', check);
+        check();
+    }
+
+    /* ── servers ─────────────────────────────────────────────────────────── */
+
+    function wireServers() {
+        const form = $('#serversForm', mount);
+        if (!form) return;
+
+        $$('[data-use]', form).forEach((btn) => btn.addEventListener('click', () => {
+            setActive(btn.dataset.use);
+            show('signin');
+        }));
+
+        $$('[data-forget]', form).forEach((btn) => btn.addEventListener('click', () => {
+            const target = getServer(btn.dataset.forget);
+            if (!target) return;
+            if (!confirm(`Forget "${target.label}"? Saved settings for it are removed too.`)) return;
+            forgetServer(target.id);
+            show('servers');
+        }));
+
+        const result = $('.server-result', form);
+        const button = $('button[type="submit"]', form);
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            clearErrors(form);
+            result.hidden = true;
+
+            const address = form.address.value.trim();
+            if (!address) { setFieldError(form, 'address', 'Enter a server address.'); return; }
+
+            setBusy(button, true, 'Checking…');
+            const found = await discover(address);
+            setBusy(button, false);
+
+            if (found.outcome !== OUTCOME.OK) {
+                result.hidden = false;
+                result.className = 'server-result bad';
+                result.innerHTML = safe`<strong>${found.message}</strong>`
+                    + (found.detail ? safe`<span>${found.detail}</span>` : '');
+                return;
+            }
+
+            // Only remembered once it has answered as a Weave server we can talk to. A list
+            // full of addresses that never worked is worse than an empty one.
+            const record = rememberServer(found);
+            result.hidden = false;
+            result.className = 'server-result ok';
+            // Every value below is chosen by the server we have only just met. It names
+            // itself, and a name is content, never structure.
+            result.innerHTML =
+                safe`<strong>${found.info.instance.name}</strong>`
+                + safe`<span>version ${found.info.version} · `
+                + `${found.info.instance.registration === 'invite_only' ? 'invite only' : 'open registration'}</span>`;
+
+            cachedQuestions = null;
+            setTimeout(() => show('signin'), 700);
+            return record;
+        });
+    }
+
+    return { show };
+}
+
+export { CLIENT_PROTOCOL, displayAddress };

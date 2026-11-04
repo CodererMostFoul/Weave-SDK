@@ -1,0 +1,931 @@
+# Changelog
+
+All notable changes to Weave Client are recorded here. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses
+[semantic versioning](https://semver.org/spec/v2.0.0.html).
+
+The newest entries are what the app shows under **What's new** after it updates, so they are
+written for the people using it rather than for the people building it.
+
+## [Unreleased]
+
+### Added
+- **Weave in a phone's browser.** At a phone's width the app becomes one column: the
+  conversation, with your microphone, deafen, camera and leave buttons in a dock along the
+  bottom. The room list and your direct messages slide in from the menu button, and the dock
+  steps aside while you type.
+
+- **Touch.** Tap somebody, or press and hold, to open their menu — on a phone it rises from
+  the bottom of the screen. Buttons are finger-sized on touchscreens, and the things that only
+  appeared when a mouse came near (Watch on a stream, a room's chat button, hiding a link
+  preview) are simply shown. Tap a stream to bring up its controls for a few seconds.
+
+- **Hold to talk.** With push-to-talk on, the microphone button is now the key: hold it to
+  speak, and it lights while you do.
+
+- **Move to room.** Administrators can move somebody from their menu as well as by dragging
+  their name, which also works from a keyboard (focus a name, press Enter) and on a
+  touchscreen.
+
+- **Weave for Android.** A first build of the app for Android phones (Android 10 and later).
+  It connects to the same servers, including ones on a home network, keeps you signed in
+  between launches, and opens invite links straight to the sign-up form with the code filled
+  in. Voice and video work while the app is on screen, and a stream can fill the whole
+  screen. Back closes whatever is open, one thing at a time, and otherwise sends Weave to the
+  background instead of closing it. Voice with the screen off is still to come.
+
+### Fixed
+- **Settings in a narrow window.** The list of sections and the open section now take turns,
+  with a back arrow between them, so Sign out is always within reach. Back or Escape goes up a
+  level before it closes anything.
+
+- **Narrow windows cut off the chat.** Below about 860 pixels wide, the room header, the
+  messages and the message box ran off the right-hand side. They now fit.
+
+- **"Click anywhere to let sound play" now does.** When a browser held back the room's sound
+  until you interacted, clicking changed nothing — it only came back when somebody new started
+  talking. A click or a key now starts it.
+
+- **Invite links filled in the code.** Opening Weave from an invite link went to the sign-up
+  form, but the invite code field was sometimes empty — always, when the link was what
+  started the app. The code is now there every time.
+
+- **No share-screen button where sharing is impossible**, such as in a phone's browser, rather
+  than one that could only fail.
+
+- **Your name and your room** in the bottom bar sit on two lines, each shortened properly
+  when long.
+
+## [0.1.71] - 2026-10-22
+
+### Added
+- **Bubbles.** The web app's bubbles are back: small round photos that drift slowly over the
+  chat, a few at a time. Click one to open a little conversation of its own — it belongs to
+  the bubble, not to any channel, so it is the same wherever you are standing. Pick one up and
+  drop it somewhere else if it is in the way. One with something new in it glows until you
+  open it. The bubbles button at the top of the room lists every bubble, floating or not.
+  They stop drifting with **Still background**, and stay where they are.
+
+- **Bubbles, for administrators.** Settings → Admin → Bubbles makes one from a photo and a
+  name, clears a bubble's conversation, or deletes it. How many float at once and how often
+  they change are in Admin → Server settings.
+
+  Bubbles need server 0.1.37 or later, with the Bubbles module switched on (it is by default).
+
+## [0.1.70] - 2026-10-22
+
+### Added
+- **What's new.** After an update, the app tells you what changed — this list, in fact. It
+  shows once per version, and Settings → Sessions & Devices has it again whenever you want it.
+
+- **Slash commands.** Type `/roll` or `/flip` in a channel and the result appears for
+  everyone there, as a line about you rather than as something you typed. Start with a slash
+  to see what the server offers. To send a line that starts with a command name as plain text,
+  begin it with two slashes. On a server older than 0.1.37 the result appears in the room you
+  are standing in rather than the channel you typed it in.
+
+- **Priority speaker.** Right-click somebody and choose **Priority speaker**: while they
+  talk, everyone else drops to a third of their volume, so a shot-caller cuts through a busy
+  room. It is your choice for your own ears — nobody else hears any difference — and it is
+  remembered on this device. A star beside their name shows who you have picked.
+
+- **Test my setup.** Settings → Voice & Audio can now record five seconds of you and play it
+  back exactly as the room hears it: after your input gain, noise gate and sound
+  optimisation. It works without joining a room and sends nothing anywhere. It also tells you
+  if you are too quiet or clipping, if the noise gate never opened, if your microphone hears
+  your speakers, or if the input you picked is really your computer's own output.
+
+- **Message sounds.** A chime when somebody writes in the conversation you have open, and
+  when a message names you or a direct message arrives anywhere else. Each has its own switch
+  in the new **Notifications** settings, and nothing plays while you are deafened.
+
+- **Faces in the chat.** Messages show the writer's picture rather than only their initials,
+  and several messages in a row from the same person within a few minutes are grouped under
+  one name.
+
+- **Paste a picture.** A screenshot pasted into the message box is attached, the same as
+  choosing it with the + button.
+
+- **Hide a link preview.** The ✕ on a preview card hides it for the rest of the session.
+
+- **Moderation, for administrators.** Settings → Admin → Moderation lists every server mute
+  and kick in force — including for people who are not online — and lifts a mute with one
+  click. Needs server 0.1.37.
+
+- **Invite codes, for administrators.** Every code on the server, how used it is and when it
+  expires, and a way to revoke one.
+
+- **Server settings, for administrators.** Switch modules on and off and change their
+  settings — the away timeout among them — without opening the web console.
+
+- **A birthday, and sounds chosen for somebody.** Admin → Sounds can name a birthday person
+  and a sound their room hears a few seconds after they arrive, and can choose anybody's join
+  and leave sounds for them. Needs server 0.1.37; an older server says so on the screen.
+
+- **Who did what.** Admin → Server now shows the audit trail, and links to the server's own
+  web console for everything else.
+
+### Fixed
+- **Scrolling up in a text channel loads older messages again.** While you were reading a
+  text channel and standing in a voice room, scrolling to the top asked for the voice room's
+  history instead, so nothing older ever appeared.
+
+## [0.1.69] - 2026-10-13
+
+### Added
+- **A mute shortcut that works from anywhere.** Settings → Voice & Audio can set a key that
+  mutes and unmutes your microphone while Weave is behind a game or another program, with a
+  short sound to tell you which way it went.
+
+### Fixed
+- **Reconnecting is quieter and more reliable.** A dropped connection that comes back is
+  picked up where it left off far more often, and the app log now records why a connection
+  went and how it came back, which makes "it kept disconnecting" possible to diagnose.
+
+## [0.1.68] - 2026-10-10
+
+### Added
+- **Watch several streams at once.** Up to six shares and cameras can be on the stage side by
+  side, or one large with the rest along the bottom.
+- **A sound when a stream starts or stops** in your room — but not for somebody who only
+  reconnected or moved, which would teach everyone to ignore it.
+
+## [0.1.67] - 2026-10-10
+
+### Fixed
+- **Coming back after a silent reconnect no longer leaves you unheard.** Some people were
+  inaudible to part of the room after their connection recovered on its own, while everything
+  on their own screen looked normal.
+
+## [0.1.66] - 2026-10-03
+
+### Fixed
+- **Settings opens straight away.** It used to wait for every answer from the server in turn
+  before showing anything, and a second click while it waited could leave it unable to open
+  at all.
+
+## [0.1.65] - 2026-10-01
+
+### Added
+- **Change your display name** in Settings → My Profile, on servers that allow it.
+
+### Fixed
+- **Join and leave sounds play when people walk into your room** — they had gone missing for
+  most arrivals — and now come out of the speakers you chose rather than the system default.
+
+## [0.1.64] - 2026-09-17
+
+### Fixed
+- **Watching a shared screen full-window is smooth again.** Three separate things were wrong
+  at once, which is why it looked so erratic.
+
+  The picture itself stuttered because of the "LIVE" badge and the controls that sit on the
+  stream. Both are frosted glass, and frosted glass over a video means every frame has to be
+  copied and blurred rather than handed straight to the screen. At thumbnail size that costs
+  nothing; at 1440p it is the difference between smooth and broken — which is exactly why the
+  small tile looked fine while the big one did not. They are still there, and no longer made
+  of blurred video.
+
+  The whole window then stopped responding for several seconds because the weaving strands
+  behind the room kept animating at full screen size, redrawing a glowing strand for every
+  person online sixty times a second, behind a video covering them completely. They now pause
+  while anything is full-window and come back when you leave.
+
+- **Full-window watching no longer drops you out on its own.** A stream that flickers for a
+  moment — a connection repaired, a room reshuffled — looked exactly like a share that had
+  ended, and you were returned to the small tiles. It now waits a couple of seconds to see
+  which it was. A share that has genuinely ended still returns you, as it should.
+
+- **Escape leaves full-window without also closing the stream.** One press was doing both.
+
+- **Being moved to Away no longer costs you your microphone.** Coming back and rejoining a
+  voice room left you silent to everybody else, for the rest of the session, with your own
+  microphone button and level meter looking perfectly normal — which is the worst way for
+  this to fail, because there was nothing to notice.
+
+  A room that does not allow voice switches your microphone off at the server, and the away
+  room is one of those. Nothing told this app, so it went on believing it was still sending
+  and never started again. It now lets go properly when it lands in such a room, and starts
+  cleanly on the way back — from the microphone that was already open, so there is no second
+  permission prompt. The same applies to any move into a room with voice switched off, not
+  only the idle sweep.
+
+## [0.1.63] - 2026-09-12
+
+### Added
+- **The sign-in screen weaves itself.** Eleven strings run the height of the window behind
+  the card, each in its own colour, and every so often one is struck — a bounce, a glow, a
+  slow fall back to rest — while the rest keep breathing. Nobody is doing it. It is the same
+  instrument the Loom plays in a room, literally: one string, drawn by the same code in both
+  places, so the first thing you see and the room you walk into are recognisably the same
+  thing.
+
+  It carries on unbroken as you move between signing in, registering and resetting a
+  password, rather than starting over on every screen, and a vignette keeps the card easy to
+  read in front of it. It stops the moment you are in a room — not merely hidden, stopped —
+  and pauses whenever the window is out of sight.
+
+  **Still background** applies here too, for the server you are signing in to, and the
+  system's reduce-motion setting leaves the strings drawn but at rest. On a first run there
+  is no server yet to have a preference, so only the system setting applies.
+
+  One thing deliberately differs from the web version. Each string waits for its next
+  moment on a clock, and after a while in another window all of those moments are in the
+  past, so the web login screen strikes all eleven on the frame you come back. Here the time
+  spent away does not count, and the strings pick up where they left off.
+
+- **Sharing your screen asks how, every time.** Pressing share now opens a short chooser
+  before the screen picker, as the web app does: a quality, and whether it is video or text.
+  A game and a spreadsheet are different streams — one wants every frame, the other every
+  letter — and the settings that used to decide this sat in a dialog nobody reopened between
+  the two. The chooser opens on whatever you picked last, so sharing the same kind of thing
+  again is a single extra click.
+
+  Four qualities: **Smooth** (720p, about 2.5 Mb/s), **Balanced** (1080p, about 5), **High**
+  (1440p, about 8), and **Source** — your screen at its own resolution, about 8. **Video**
+  keeps motion smooth at up to 60 frames a second; **Text** keeps small type sharp at up to
+  30. Nothing starts until you press *Choose screen*, so the order you pick them in does not
+  matter — on the web app, clicking a quality started the share on the spot.
+
+  The quality you choose is held for the whole share, including when a dropped connection
+  puts the share back on its own.
+
+### Changed
+- **Screen sharing is no longer in Settings.** The two settings it had moved into the chooser.
+  If you had changed them, the chooser opens on the nearest match the first time: 1080p60
+  becomes Balanced + Video, and "keep text readable" becomes Text.
+- **High needs a server on 0.1.33 or later to reach its full quality.** Older servers cap one
+  person's streams at 8 Mb/s all together, which a High share with its sound already exceeds.
+  The share still works; it is simply held back to what that server allows.
+- A 1080p share at 60 frames a second now budgets 5 Mb/s rather than 6, matching the web app.
+
+## [0.1.62] - 2026-09-12
+
+### Added
+- **The Loom: you can see who is talking, as strings.** The room you are standing in now
+  draws one vibrating string per person beside their face in the rooms column. A string
+  belongs to somebody — it carries their colour, the same colour they have everywhere else —
+  and it swells and glows with their voice. When two or more people talk at once the strings
+  leave their rows, pull toward each other and braid, which is the thing this app is named
+  after and the one part of a conversation a list of names cannot show.
+
+  Three instruments to choose from in Settings → Appearance, and they are genuinely
+  different rather than three palettes. **Cloth** hangs the strings in a warp and interlaces
+  them, so they pass over and under as real thread does. **Harp** strings them between two
+  rails with a tuning peg each and no harmonics, so the motion is a pure ring. **Web** joins
+  every pair of people who are actually talking with a glowing thread.
+
+  Somebody who has muted themselves lies flat, however much noise reaches their microphone.
+
+### Fixed
+- **The living background behind the conversation has never once been visible.** It was
+  built, it was tested, and it was drawing a correct frame sixty times a second into a
+  canvas that the browser was compositing *behind* the room's own opaque background — the
+  column is positioned but never formed a stacking context, so a layer asking to sit behind
+  the content went behind the column instead. One property; the whole animation.
+
+- **And it had nothing to draw for most of the time you were looking at it.** The strands
+  came from the occupants of the room being *read* rather than from who is actually here, and
+  a text channel has no occupants at all — so it emptied itself precisely when somebody was
+  most likely to be watching it. It is now everyone online on the server, which is what a
+  field of strands was always meant to say.
+
+- **"Still background" only worked if you changed it.** Turning it on stopped the animation,
+  but starting the app with it already on ran a *frozen* weave rather than none, because
+  start-up did not ask. Both animations now answer to one place, and stopping clears rather
+  than leaving the last frame painted — a still photograph of a living thing reads worse than
+  its absence.
+
+## [0.1.61] - 2026-09-11
+
+### Added
+- **You can change your own password from inside the app.** Settings → Security & Recovery has
+  said "needs a server update" since the screen was drawn, and the only way to change a
+  password was to go to the sign-in screen and claim you had forgotten it — which signs you
+  out everywhere and, in the server's log, reads like an account that got into trouble.
+  It now asks for your current password and takes a new one.
+
+  Your **other** devices are signed out, which is usually the whole reason for changing it.
+  The device you are typing on is not: signing yourself out for your own good housekeeping
+  would be absurd.
+
+- **And your security question.** The question that recovers this account if you forget the
+  password can now be chosen and changed here, and the screen says which one is currently set
+  rather than making you go to the sign-in screen to find out. An account that has never had
+  one — an old account set up with a recovery phrase — is told so plainly.
+
+  Against a server older than this app, the screen keeps the explanation it always had, since
+  a form that can only fail is worse than being told the server is behind.
+
+- **Report a Bug works.** Describe what happened in your own words and send it to the
+  administrator of the server you are signed in to — never to anyone else. The report carries
+  the tail of this app's log, redacted on **your** machine before the app itself ever sees the
+  text: home directories, tokens and anything that looks like a password are removed in the
+  background process. What will be sent is stated in plain bytes, and there is a Show button
+  that reveals the exact text, because a promise about redaction is not the same as reading it.
+
+  A browser build has no log file it can read, and says so rather than pretending — the
+  description is the report, which is most of it anyway.
+
+- **Administrators can read what was reported.** A new Admin → Bug reports screen lists
+  reports newest first and opens one in full: what the person said, their log, the server's
+  load at the moment it arrived, and the server's own log from around that time. One screen
+  instead of a folder on the server and a shell to read it with.
+
+- **Sessions & Devices lists everywhere this account is signed in, and signs any of them
+  out.** It has shown "needs a server update" since the screen was drawn. Each device is
+  named by what it actually is — "Weave desktop on Windows", "Chrome on Android" — with when
+  it signed in and when it was last used, and the one you are reading on is marked so there
+  is no doubt which row is yours.
+
+  Signing one out ends it immediately: the session is revoked and, if that device is sitting
+  in a room, its connection is closed then and there rather than at its own convenience. The
+  device you are on cannot be signed out from the list, because it would leave the app
+  looking signed in until its next request failed — Sign out is a button of its own and does
+  it properly.
+
+### Fixed
+- **A resumed connection knew itself by the wrong name.** Since reconnections started keeping
+  their place in the room, the id the app held for its own connection was the one issued to
+  the socket rather than the one the room actually uses — stale after the first resumed
+  reconnection. Nothing visible depended on it yet; two things were about to.
+
+## [0.1.60] - 2026-09-10
+
+### Fixed
+- **A connection that drops for a moment no longer stops your screen share, or plays a join
+  and leave sound for everyone else.** A few seconds of bad network — the kind nobody
+  notices at the time — was being treated as leaving the server and coming back. Everyone
+  else heard you go and arrive again, the timeline recorded that you had stopped streaming
+  and started streaming, and if you were sharing your screen it genuinely did stop, because
+  the client rebuilt every part of its media from nothing.
+
+  None of that was ever necessary. The audio and video path is a separate connection from
+  the one that dropped, and it was still perfectly good. A reconnection now claims back the
+  place it already had: the same standing in the room, the same microphone, the same share.
+  The only thing repaired is the network path itself, which happens without interrupting
+  anything carried on it. Against a server too old to offer this, the client falls back to
+  what it did before, so nothing gets worse.
+
+- **Watching somebody's screen survives your own connection dropping.** The choice to watch
+  a stream was remembered against the connection it was made on, so a blip on YOUR line
+  quietly turned everything you were watching back into a placeholder, with nothing on
+  screen to say why. It is remembered against the person now, and comes back with you — as
+  long as they are still sharing.
+
+- **A connection that stops answering is replaced immediately rather than after a wait.**
+  Having given up on a socket that had gone quiet, the client then waited for that socket to
+  admit it had closed — which, behind a router that has silently stopped forwarding, can
+  take minutes or simply never happen. "Reconnecting" sat there for the whole of it. It now
+  starts a fresh connection at once, and a straggling close from the old one can no longer
+  interfere with the new one.
+
+## [0.1.58] - 2026-09-01
+
+### Fixed
+- **The noise gate could not be set, and at its most aggressive it still let a noisy room
+  through.** Three faults on one control, which is why it felt like the gate simply ignored
+  you:
+
+  The meter was reading your **raw microphone** while the gate judged the signal *after*
+  your input gain. So turning the input gain down genuinely did change what the gate heard,
+  and the bar never moved a pixel — the one control meant to make the threshold legible was
+  showing a different sound from the one being gated. The meter is now tapped at the gate's
+  own input, so it follows the gain slider: measured, halving the input gain moves the bar
+  down by exactly the ten points that six decibels should.
+
+  The meter also read about **12 dB hot**, from a display curve that was never in the
+  threshold's arithmetic. Ordinary room noise drew a bar at 96% of full scale, leaving
+  almost nowhere to put the line. And the bar measured an average where the gate measured
+  peaks, so the line meant something different for a fan than for a voice. Both are gone:
+  the bar, the line and the gate are now one measurement — peak level, in real decibels,
+  at the point the gate reads.
+
+  Lastly the sensitivity slider **topped out below ordinary room noise**. Its maximum was
+  −30 dBFS, and a fan on a hot microphone peaks louder than that, so there was no setting
+  at which the gate would ever close — measured, noise at −26 dBFS stayed open at 100 out
+  of 100. The range is now −80 to −20 dBFS. The same noise now closes the gate three points
+  above where the bar rests, which is what "drag the line to just above where it settles"
+  was always supposed to mean.
+
+  If you had the gate switched on, **check your sensitivity setting** — the numbers on the
+  slider mean something different now, and yours has not been converted.
+
+## [0.1.57] - 2026-09-01
+
+### Fixed
+- **The process-isolated share audio from 0.1.56 was never actually used.** The capture shipped,
+  but the renderer could not reach it — the desktop shell exposed the capability while the
+  platform adapter the app reads never surfaced it — so every share silently fell back to the
+  whole-desktop mix and the echo persisted. It is wired now, and a fall-back is logged rather
+  than silent. Confirmed against a live game: a shared window carries only that program's audio.
+- **Your own screen no longer plays back at you by default.** A self screen tile is a placeholder
+  with a Watch button now — you are not subscribed to your own share unless you ask to be, and it
+  returns to a placeholder when the share ends. Your own camera stays a live mirror, as before.
+
+## [0.1.56] - 2026-09-01
+
+### Fixed
+- **A screen share no longer sends your own call back to viewers.** The shared audio was the
+  system's entire output mix, which includes Weave's own playback — so a viewer heard their own
+  voice returned through your share. On Windows, Weave now captures the audio of the shared
+  program itself (WASAPI process loopback in a small bundled sidecar): a shared **window**
+  carries only that program's sound, a shared **screen** carries the desktop minus Weave's own
+  audio. Either way the call is not in it. Where the capture is unavailable it falls back to the
+  old system-audio behaviour, so a share is never lost to it.
+
+## [0.1.55] - 2026-09-01
+
+### Changed
+- **A stream-quality click captures that exact instant.** The report already carried the run-up
+  to the moment you pressed; now it also takes a fresh reading at the press itself, so a brief
+  blip you reacted to is in the data rather than lost between two background samples.
+
+## [0.1.54] - 2026-09-01
+
+### Fixed
+- **A streamer no longer receives their own stream**, matching the server: there is no reason
+  to consume audio you are already sending, and doing so was a feedback loop that fed a share
+  back into the capture it came from.
+- **User management keeps names visible.** The admin and tester tags could push a name out of
+  its row; the row wraps now, and the name always has room.
+
+### Changed
+- **A tester or admin grant takes effect without signing out.** When your roles change while
+  you are signed in, the client updates in place — so the stream-quality buttons appear the
+  moment you are made a tester, rather than on your next launch.
+
+## [0.1.53] - 2026-09-01
+
+### Added
+- **Choose your audio output device**, in Settings → Voice & Audio, right beside the input
+  device. Weave's own playback can now be pointed at a particular headset or speakers — which
+  is what keeps the room's voices out of a game capture on a machine that splits its audio, so
+  a viewer stops hearing their own voice returned through your share.
+
+### Changed
+- **The stream Good/Bad buttons are now for testers, and say what they are.** They are
+  labelled as stream quality and shown only to accounts marked as testers, granted from user
+  management. A report also now includes what the DISPLAY is doing — dropped painted frames,
+  fullscreen, how far the picture is upscaled — not just the network and the decoder, so a
+  share that only falls apart in fullscreen is recognised as the render cost it is instead of
+  reading as clean.
+
+### Fixed
+- **Administrators can be added from user management again.** The control to promote — and
+  demote — an account was missing, so the only way to make an admin had been the command line.
+  It is a button now, alongside the new tester grant.
+
+## [0.1.52] - 2026-09-01
+
+### Added
+- **Good and Bad buttons on a live stream.** When a screen share looks grainy or keeps
+  freezing, a thumb up or down on the stream sends a report to your own server — carrying
+  the real numbers behind the picture rather than just "it looked bad". A viewer's report
+  describes what reached them (freezes, dropped frames, packet loss, how long each frame
+  took to decode); a streamer's describes what left them (whether the encoder or the uplink
+  was the limit, and at what frame rate and resolution). Each keeps the run-up to the moment
+  you clicked, so a freeze is caught with its cause rather than only its aftermath. Good
+  matters as much as Bad: it is the baseline a bad moment is measured against.
+
+## [0.1.51] - 2026-09-01
+
+### Fixed
+- **Voices stuttered and dropped to barely audible, and never quite for the same person.**
+  The microphone was asking Opus to suppress its own silence — DTX — which stops sending
+  during whatever the encoder judges to be a gap and clips the front of the next word
+  coming back out of one. That is what the stutter was. It has been on since long before
+  anyone started reporting this, which is why it never lined up with any particular
+  release, and it hurts worst on exactly the connections that were already struggling.
+
+  It is off now, and it costs nothing to lose: the noise gate already decides when you are
+  not talking, against a threshold you can see and set, so DTX was doing a job nothing
+  needed done. Your microphone is also announced to the encoder as speech rather than left
+  to be guessed at, and kept full-band instead of being allowed to quietly narrow.
+
+  Four releases in a row once tried to improve this path by reasoning about it and each
+  made something worse, so none of this is reasoned either: it is what the Weave web app
+  sends, which is the thing people compare us to when they say voice is better over there.
+  A server new enough to carry voice at 96 kb/s helps further still, since a browser left
+  to itself settles around 32 kb/s; against an older one the fixes above stand on their own.
+
+### Added
+- **Sound optimisation**, in Settings → Voice & Audio, off unless you turn it on. It evens
+  out a loud voice so nobody blasts the room, and cuts the low rumble and hum that cheap
+  microphones pick up and then spend bitrate carrying. Off, your voice takes exactly the
+  path it always has. It applies the moment you switch it, mid-sentence and without a gap.
+
+### Changed
+- **You can turn somebody up as well as down.** The volume slider on a person, and the one
+  on a stream, now reach 200% instead of stopping at 100% — which is as far as the browser
+  would let an audio element go, so quiet talkers had no fix at all. Incoming sound is
+  routed through the same audio engine the meters already use to get past that ceiling,
+  and falls back to the old path by itself if that engine is ever unavailable.
+
+- The noise gate no longer flickers on the end of a sentence. It opened and closed on one
+  number, so a voice trailing off and resting on the line chattered it several times a
+  second; it now takes a slightly quieter level to close than it did to open.
+
+- A microphone that goes silent because the browser suspended our audio engine — the window
+  going to the background, the system moving audio focus elsewhere — is noticed and
+  restarted, rather than staying silent while everything reports success.
+
+## [0.1.50] - 2026-08-31
+
+### Fixed
+- **The zoom slider did nothing when cropping a profile picture.** It moved, and the
+  picture stayed exactly where it was. Zoom was being measured against the image's own
+  pixels rather than against the size of the crop circle, so on anything as large as a
+  photograph every position of the slider asked for more than the maximum and landed on the
+  same one. It now means what it looks like it means: at the left the picture fills the
+  circle, and it grows smoothly to four times that at the right.
+
+- **Your new picture did not appear on the Settings → My Profile card.** It showed up
+  everywhere else — the room list, the bottom bar — while the one screen you chose it on
+  carried on showing your initials. It now appears there too, both straight after saving
+  and when you next open Settings.
+
+### Removed
+- The Display Name box in Settings → My Profile. It could not be typed into and existed
+  only to explain that changing your name is not possible yet; your name is already on the
+  card above it. If it becomes changeable, the field returns as one that works.
+
+## [0.1.49] - 2026-08-31
+
+### Changed
+- **Being moved to the away room now depends on whether you are at your computer.** The
+  desktop app reports how long your keyboard and mouse have gone untouched — across every
+  application, not just Weave — and the server uses that instead of guessing from whether
+  you have been talking. Working quietly in another window no longer looks like having left.
+
+  Talking still counts. Whichever happened more recently — speaking, or touching your
+  machine — is what you are judged on, because either one means you are there.
+
+  Watching somebody's screen share inside Weave counts as being present too, however long
+  you go without touching anything. A video playing in a different application still cannot
+  be seen: to the operating system that looks the same as an empty chair, so the timeout is
+  what protects you there.
+
+  Nothing here reaches a server older than **0.1.21** — those carry on measuring microphone
+  silence exactly as before — and nothing is reported at all when Weave is running in a
+  browser, because a web page cannot see input to other windows.
+
+### Fixed
+- The status panel behind your own name was laid out wrongly: "Online" and "Away" appeared
+  on a line of their own beneath their dot, with the tick stranded off to the right. The dot,
+  the label and the tick now sit on one line as intended, with the description underneath.
+
+## [0.1.48] - 2026-08-31
+
+### Added
+- **A profile picture.** Settings → My Profile now has an upload button. Pick an image and
+  it opens in a circular frame — drag it to choose what sits inside the circle, use the
+  slider to zoom, then save. What you see in the frame is exactly what gets stored: the
+  crop happens here on your machine, and only the finished square is sent.
+
+  It then appears wherever you do — the room list, the bottom bar, your messages. Remove
+  takes it away again and puts your initials back.
+
+- **A status, behind your own name.** Clicking your profile in the bottom bar now opens a
+  small panel: Online or Away, with a tick on the one you are on, and Settings underneath.
+  The dot beside your name changes to match, and so does the one everybody else sees.
+
+  Your choice is remembered by the server, so it survives closing the app. It is also a
+  separate thing from being moved to the away room for going quiet — that is about where
+  you are, this is about whether you want to be disturbed, and neither undoes the other any
+  more.
+
+### Changed
+- The dot beside somebody in a room means something now. It used to say only that they were
+  connected, which everyone in the list is anyway; it now shows what that person has said
+  about themselves.
+
+- Settings is one click further away, reached from the panel behind your name rather than
+  directly. That is the trade for status living somewhere you will actually use it — buried
+  in a preferences dialog, a status is one nobody sets and nobody trusts.
+
+### Requires
+- A server running **0.1.20** or newer. Against an older one the upload button and the
+  status options are simply not shown, rather than shown and failing.
+
+## [0.1.47] - 2026-08-31
+
+### Added
+- **Right-click somebody in a room.** Until now a person in the sidebar was text: the pointer
+  turned into a cursor for selecting words, dragging across the list highlighted names, and
+  there was nothing you could do with any of it. A right-click now opens a menu with the two
+  controls you actually want — mute them just for you, and set how loudly you hear them.
+  Neither leaves your machine. Nobody else is affected and nobody is told.
+
+  Per-person volume already existed, but only reached the person you were watching on the
+  video stage. It now reaches anybody in the room, whether they are on camera or not.
+
+- **For administrators, two more entries below a divider.** Server mute silences somebody in
+  a way they cannot undo — five minutes, an hour, or until you lift it — and Kick disconnects
+  them and holds the door for a minute. Kick asks twice before it does anything, because a
+  menu that opens under your pointer is a bad place to keep a one-click ejection.
+
+- **Drag somebody into another room.** Administrators can pick a person up from the sidebar
+  and drop them in a different voice room. Only rooms you can stand in light up as you pass
+  over them, so a text strand is never offered as somewhere to put a person.
+
+### Changed
+- Being server-muted says so. Your microphone button goes dark with the reason and, when it
+  is a timed mute, the time it ends; the room says the same thing above the composer. Before,
+  a muted person had a button that looked live and did nothing — which reads as a broken app
+  rather than as a moderation decision. Somebody else's forced mute is marked differently to
+  their own in the sidebar, because choosing not to speak and not being allowed to are not
+  the same fact.
+
+- Being kicked shows what happened and comes back on its own once the minute is up, standing
+  in no room rather than dropping you back into the one you were removed from.
+
+## [0.1.46] - 2026-08-30
+
+### Fixed
+- Screen shares of games stuttered, and the cause was our own frame rate cap rather than
+  anything on the network. A quality setting of 30fps was applied as a hard ceiling, which
+  makes the capture run on a fixed timer — and a game drawing 70 frames a second into a
+  30-per-second grid puts two frames in one slot and one in the next, over and over. Nothing
+  was being lost. The stagger was manufactured before the picture ever left the machine.
+
+  The rate you pick is now a target rather than a ceiling, and a share settles on the nearest
+  rate the source divides into evenly. A 70fps game streams at 35 — two whole frames each
+  time, evenly spaced — where before it stumbled along at a nominal 30. A 144fps game streams
+  at 28.8, a 50fps one at 25. There is nothing to configure: it measures what you are actually
+  sharing a few seconds in, and looks again as you play, because a game's frame rate moves
+  between a menu and a firefight.
+
+- Shared audio sounded far worse than it should have. Nothing was setting a bitrate for it, so
+  it fell back to the browser engine's own default of around 32 kb/s — and then split even
+  that across two channels, well under what music or a game's soundtrack needs to survive at
+  all. It is now encoded at 256 kb/s, which is Opus's own recommended ceiling for stereo music
+  and a rounding error beside the video it travels with.
+
+  This is not the voice bitrate that 0.1.45 handed back to server operators, and that decision
+  stands: your microphone is untouched and still follows the server. A screen's system audio is
+  a different slot with a different job, and the server has only one value to give both —
+  raising it there to suit shared music would drag every microphone up with it for nothing.
+
+### Known
+- Shared system audio is still carried as one channel rather than two. Echo cancellation has to
+  stay on for it, because the capture is your machine's whole output mix and that mix contains
+  the call — without it, everyone hears their own voice returned through your stream — and
+  cancelling echo downmixes to mono as a side effect. Sharing one application's audio instead
+  of the whole mix is the real answer, and it is a larger piece of work.
+
+## [0.1.45] - 2026-08-29
+
+### Changed
+- Voice encoding is back to exactly what 0.1.40 did. Four releases tried to improve it and
+  each one made something worse — a mismatched audio clock, then retransmission that made
+  distant callers sound fast-forwarded, then a general loss of quality that no single
+  explanation covered. That last one is the point: when three explanations in a row have
+  been wrong, the right move is to return to the version people were happy with rather
+  than reason a fourth time.
+
+  So the microphone is captured and encoded the way it was before any of this started.
+  Nothing is pinned, nothing is forced, and Opus is left to make its own decisions about
+  bandwidth under pressure — which it is good at, and which being told otherwise prevented.
+
+- Raising the voice bitrate is now something a server operator turns on and listens to,
+  rather than a guess baked into a release. It is genuinely worth having, and it will come
+  back on by default once somebody has compared the two by ear.
+
+### Kept
+- Every actual bug fix from 0.1.41 onwards stays: the noise gate no longer kills stereo
+  microphones, quality settings survive a restart, a dead connection is noticed and
+  repaired instead of silently staying dead, shared audio no longer echoes the room back
+  to itself, and screen shares are not black.
+
+## [0.1.44] - 2026-08-29
+
+### Fixed
+- Callers on another continent sounded fast-forwarded and crackly. 0.1.41 asked for Opus
+  retransmission, which mediasoup-client otherwise strips. Retransmission costs a full
+  round trip, so the receiver holds its jitter buffer open waiting for a repeat of any
+  lost packet — and then plays the audio slightly fast to catch back up, which is exactly
+  what "fast-forwarded" is. Nothing was ever coming: the server does not retransmit audio,
+  so the waiting bought nothing at all.
+
+  Over a short hop the delay is small enough to go unnoticed, which is why this only ever
+  showed up for people calling from far away. Removed. Forward error correction, which
+  costs no round trip because the redundancy travels inside the next packet, still does
+  the loss resilience — and it helps a distant caller just as much as a near one.
+
+## [0.1.43] - 2026-08-29
+
+### Fixed
+- Voice crackled and popped. 0.1.41 pinned the audio graph to 48 kHz and asked the
+  microphone for a 10 ms buffer, both to save Opus a resample it never needed saving from.
+  The sample rate asked of a microphone is only a request — a device that runs at 44.1 kHz
+  carries on doing so — while the graph was pinned regardless, and feeding a 44.1 kHz
+  microphone into a 48 kHz graph is the mismatch that clicks. The 10 ms buffer then left no
+  headroom for a machine doing anything else, and each underrun is heard as a pop.
+
+  Both are gone. Capture and the graph follow the hardware, as they did before, so they
+  always agree. The resample this was avoiding is inaudible; the crackling was not.
+
+## [0.1.42] - 2026-08-28
+
+### Fixed
+- Screen shares were black. 0.1.41 asked for VP9 with spatial layers, which negotiated and
+  connected perfectly — the share was produced, both viewers consumed it, the server log
+  was clean — and then no frame ever decoded. Back to the codec that worked. VP9 is still
+  the right choice for screen text and the server still offers it; it returns when it has
+  been tested between two real machines rather than reasoned about.
+- Everyone watching a screen share heard themselves through it. 0.1.41 turned off echo
+  cancellation on the shared-audio capture, on the grounds that it degrades music. It does
+  — but that capture is the machine's whole output mix, and the mix contains the call, so
+  echo cancellation was also the only thing stopping everyone's voices being picked up and
+  sent back to them. It stays on.
+
+  Noise suppression and automatic gain stay off, since neither had anything to do with the
+  loop and both flatten music. The cost is that shared audio is mono again: the echo
+  canceller downmixes. Getting stereo back needs the shared application's audio captured
+  on its own rather than the whole system mix, which is a feature rather than a setting.
+
+## [0.1.41] - 2026-08-28
+
+### Fixed
+- Some microphones produced complete silence, on some machines only, with nothing reported
+  anywhere. If your capture device presented two channels — many USB interfaces, line
+  inputs, and several headset drivers do — the noise gate crashed on the first block of
+  audio and was never run again. Everything went on reporting success while nothing was
+  sent. If you have ever been told you sounded fine one day and were inaudible the next,
+  this was probably why.
+- Stream quality, camera quality, input gain and the noise gate all reverted every time you
+  restarted, and again every time you opened Settings. They were saved correctly and then
+  discarded on the way back in, so choosing 1080p60 quietly left you on 1080p30 for ever.
+- Shared system audio was being run through the processing meant for a microphone. Echo
+  cancellation was subtracting the audio being shared, noise suppression was treating
+  sustained music as noise, and automatic gain was flattening everything to one volume.
+  Shared audio is now captured untouched, and in stereo — it was only ever stereo in name.
+- Losing one direction of audio no longer means reconnecting by hand. A connection that
+  stopped carrying media went unnoticed: it was only acted on when the browser gave up
+  entirely, which it often never did, so the room simply stopped hearing you — or you
+  stopped hearing them — with nothing on screen to say so. It is now noticed and repaired,
+  and while that is happening the connection indicator says so.
+- After a failed reconnection attempt, the microphone stayed off for the rest of the
+  session with nothing left to notice. A listener who never turned their microphone on
+  could also exhaust the reconnection budget over a session's ordinary hiccups and be told
+  to rejoin the room for something everyone else survived.
+
+### Added
+- Voice is encoded at 64 kb/s rather than roughly 32, and shared system audio at 128 in
+  stereo. This is most of the difference between "muffled" and "clear".
+- Screen shares use VP9 where the server offers it, which is considerably sharper on text
+  and carries several quality layers at once, so one viewer on a poor connection no longer
+  drags the picture down for everybody.
+- A camera frame rate setting, which was already being read but could never be set.
+- The camera's quality ladder now follows the resolution you chose. Picking 1080p used to
+  give a 1080p picture squeezed into a 720p budget, which looked worse than 720p.
+
+## [0.1.8] - 2026-08-23
+
+### Added
+- A room browser, reached from the search icon beside the server name. Cards show who is in
+  each room by face rather than by number, with a live-only filter, and clicking one takes
+  you there. It stays live while open, so the counts cannot go stale under you.
+
+### Notes
+- Room descriptions and capacities appear in the design but the server stores neither, so
+  they are absent rather than invented. A fabricated "2 of 40" would look authoritative and
+  mean nothing.
+
+## [0.1.7] - 2026-08-23
+
+### Added
+- Settings. The gear and your name in the corner both open it. Working today: noise
+  suppression, echo cancellation, automatic gain, microphone selection, in-window
+  push-to-talk with a rebindable key, a still-background switch, creating an invite, the
+  AFK exemption, and your join date.
+- Every control the server cannot support yet is shown with the reason on screen rather
+  than hidden or silently disabled. Recorded in docs/placeholders.md.
+
+### Fixed
+- Signing out never told the server. The app defined `api.logout` and called it from
+  nowhere, so quitting left a usable session behind for up to twelve hours. The power
+  button in the corner did the same — it dropped the socket and rebooted the UI while the
+  session stayed live.
+- Join dates could show the wrong day. SQLite returns UTC timestamps with a space and no
+  zone marker, which JavaScript parses as local time.
+
+## [0.1.6] - 2026-08-23
+
+### Added
+- You can see who is talking. A ring appears around the avatar of anyone speaking, in both
+  the room list and the member list, held briefly so it reads as a signal rather than
+  strobing on every syllable.
+
+### Fixed
+- Audio levels are keyed per connection while people are keyed per account, so somebody
+  signed in on two machines never matched and showed as silent while audibly talking. A
+  person now carries every connection they have, and the loudest wins.
+
+### Notes
+- Paired with a server fix: a move between channels served by different SFU workers now
+  rebuilds the media path instead of silently stranding it. Inert until the server runs more
+  than one worker, which is not the default.
+
+## [0.1.5] - 2026-08-23
+
+### Added
+- Voice. The microphone is produced to the SFU on joining a room that allows it, everyone
+  else's audio is consumed automatically, mute works, and the weaving background's pace is
+  driven by how loud the room actually is.
+- A voice notice above the composer, shown only when there is something to say: a blocked
+  microphone, a room with voice disabled, a recovery in progress, or a give-up.
+
+### Fixed
+- One person signed in on two machines occupied a room twice in the room list, while the
+  member list correctly showed them once.
+
+### Notes
+- Verified against the live server with a synthetic 440 Hz track: produce, forward, consume
+  and play, with the received tone measured at 422 Hz — the same signal, one FFT bin wide.
+- Video and screen share are not wired yet.
+
+## [0.1.4] - 2026-08-23
+
+### Added
+- The room. Signing in now opens the real four-column application against your server
+  rather than a placeholder: live channel list with occupancy, member list grouped by
+  presence, message history, sending and receiving, room switching, mute, and the animated
+  background driven by whoever is actually in the room with you.
+
+### Notes
+- Users and peers are modelled separately. Users are accounts and come from HTTP; peers are
+  live connections and come from the socket. One person signed in twice is one row in the
+  member list and two peers, which is what stops the ghosts the previous client had.
+- Voice, video and screen share are not wired yet — the room is the frame they mount into.
+
+## [0.1.3] - 2026-08-23
+
+### Fixed
+- Nothing persisted between launches. The renderer was served from `file://`, which has an
+  opaque origin, and Chromium refuses storage to opaque origins — every `localStorage` call
+  threw. The storage helper catches and returns a fallback by design, so the app silently
+  forgot every server and setting on close. It is now served from a registered `weave://`
+  scheme with a real, secure origin.
+- Pressing Enter on the sign-in form opened server settings instead of signing in. The gear
+  icon is a `<button>` with no `type`, which defaults to `submit`, and it sat above the
+  Sign In button — so Enter fired the first submit control in the form.
+
+### Added
+- A "Remember me next time" box. Credentials go to the OS credential store, encrypted with
+  a key bound to this Windows account, never to a plain file. Saved only after the details
+  have been shown to work, so a typo is not persisted; unticking clears what was saved.
+- The sign-in fields keep what you typed when you visit server settings and come back. In
+  memory for the session only, never stored, cleared on success.
+
+## [0.1.2] - 2026-08-23
+
+### Fixed
+- Pressing "Restart now" for an update showed an installer progress window and then left
+  the app closed. `quitAndInstall()` defaults to a visible install and to not relaunching;
+  both are now set explicitly. The quit-time path was already silent.
+
+### Added
+- `scripts/predict-delta.mjs`, which reports how large the next update will actually be by
+  comparing two blockmaps, and fails a release if the delta exceeds 10% — the signal that
+  something recompressed the payload rather than that the code changed a lot.
+- The updater now logs how many bytes it actually transferred against the full installer
+  size, so whether a differential update worked is a number rather than an assumption.
+- `docs/releasing.md`, including the four pipeline rules that silently turn every user's
+  next update into a full download.
+
+## [0.1.1] - 2026-08-23
+
+### Fixed
+- Sign in and register failed with "current is not defined". Scoping session tokens per
+  server changed two call sites that referenced a variable which only existed in a
+  different branch of the same file. It parsed, it built, and all 115 tests passed, because
+  the broken line only runs when somebody actually signs in.
+
+### Added
+- ESLint, running before the test suite and in CI. `no-undef` catches the class of bug
+  above in milliseconds; the rule set is deliberately narrow — things that are wrong, not
+  matters of taste.
+
+## [Unreleased]
+
+### Added
+- Platform adapter: one source tree, two builds. `WEAVE_TARGET=browser` inherits the
+  origin that served it; `WEAVE_TARGET=desktop` ships blank and is pointed at a server.
+  Server management is compiled out of the browser build rather than hidden in it.
+- Address parsing that accepts a bare hostname, `host:port`, an explicit scheme, a pasted
+  `wss://` URL, or a URL copied out of a browser. Defaults to HTTPS, except for addresses
+  that are obviously on a private network, where plain HTTP is the common case.
+- Server discovery against `GET /api/server-info` with protocol *range* negotiation, so a
+  newer client does not refuse a server it could have talked to. Distinguishes timeout,
+  wrong software, incompatible version and unfinished setup; everything a browser cannot
+  distinguish gets one honest message rather than a specific guess.
+- Multi-server list for the desktop build, with per-server namespaced settings. A server
+  is only remembered once it has answered.
+- Sign in, register with an invite code, and a three-step password reset built on a
+  security question. No email is involved at any point.
+
+### Notes
+- The room — voice, screen share, chat — is not built yet. Signing in currently lands on
+  a placeholder confirming the whole chain works.

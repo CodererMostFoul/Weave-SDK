@@ -1,0 +1,406 @@
+// Entry point.
+//
+// For now this is the authentication surface plus a placeholder for the room. The room
+// itself is the next piece of work: the previous client's 13,700 lines get brought across
+// as modules behind the same platform adapter used here.
+
+// The stylesheet is imported here rather than linked from the HTML so that it travels
+// through the module graph: vite then hashes it into the build and hot-reloads it in
+// development. A bare <link> to a source .css is served as a JS module by the dev
+// server and silently applies no rules at all.
+import './styles.css';
+
+import { createAuth } from './auth/index.js';
+import { platform, VERSION, noteOriginIsWeave, createStorage } from './platform/index.js';
+import { createApi } from './lib/api.js';
+import { resumeOutcome, RESUME_TIMEOUT_MS, RESUME_AUTOJOIN_KEY } from './auth/resume.js';
+import { runBack } from './ui/back.js';
+import { activeServer, rememberServer, setActive } from './server/store.js';
+import { parseDeepLink, openRegister } from './server/deeplink.js';
+import { discover, OUTCOME } from './server/discover.js';
+import { createUpdateBanner } from './updates/banner.js';
+import { showWhatsNewIfUpdated } from './updates/whats-new.js';
+import { createLink } from './net/link.js';
+import { createIdleReporter } from './room/idle.js';
+import { createRoom } from './room/index.js';
+import { displayAddress } from './server/address.js';
+import { readPrefs } from './settings/index.js';
+import { JoinBackground } from './ui/join-background.js';
+import { $, html, safe } from './ui/dom.js';
+
+const app = $('#app');
+
+/**
+ * The strings behind the sign-in card.
+ *
+ * Held here rather than inside the auth controller because it belongs to the SHELL: auth
+ * re-renders only #stage as you move between sign-in, register, reset and servers, so one
+ * animation carries on across all of them instead of restarting on every click.
+ */
+let authBackground = null;
+
+function shell() {
+    return `
+    <div class="app">
+      <canvas class="auth-bg" id="authBg" aria-hidden="true"></canvas>
+      <div class="auth-vignette" aria-hidden="true"></div>
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-mark small" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+                 stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 14c2.5 0 2.5-4 5-4s2.5 4 5 4 2.5-4 5-4 2.5 4 3 4"/>
+            </svg>
+          </span>
+          Weave
+        </div>
+        <div class="topbar-spacer"></div>
+        <span class="server-pill none" id="serverPill">no server</span>
+      </header>
+      <main class="stage" id="stage"></main>
+    </div>`;
+}
+
+/** Build the sign-in strings into a freshly rendered shell. */
+function startAuthBackground() {
+    authBackground?.destroy();
+    const canvas = $('#authBg');
+    authBackground = canvas ? new JoinBackground(canvas) : null;
+    applyAuthMotion();
+}
+
+/**
+ * Whether the sign-in strings move.
+ *
+ * "Still background" is stored per server, so it can only be honoured once there is a
+ * server to read it from — on a first run there is not, and only the system's own
+ * reduce-motion setting applies (the renderer reads that itself). Somebody who stilled the
+ * weave in a room should not be greeted by a moving one on the way back in.
+ */
+function applyAuthMotion() {
+    if (!authBackground) return;
+    const server = activeServer();
+    const still = server ? Boolean(readPrefs(server.id).staticBackground) : false;
+    if (still) authBackground.stop(); else authBackground.start();
+}
+
+// Once, at module level: boot() runs again on every sign-out, and a listener added there
+// would be added again each time.
+window.addEventListener('weave:server-changed', applyAuthMotion);
+
+/**
+ * What a change of route repaints: the sign-in screens of the current boot, or nothing.
+ *
+ * One listener for the life of the page. boot() runs again on every sign-out, and adding a
+ * listener there each time left every earlier sign-in screen listening as well — detached
+ * from the page, but each one still taking a pending invite code out of storage before the
+ * visible screen could read it. Null while the room is showing: the sign-in screens are not
+ * on the page then, and repainting them would only spend an invite code on nothing.
+ */
+let showRoute = null;
+window.addEventListener('hashchange', () => { showRoute?.(); });
+
+// Android's Back button, where there is one. See ui/back.js: it closes what is open, and
+// otherwise sends the app to the background — never out of the call.
+if (platform.back?.available) {
+    platform.back.onBack(() => runBack({ minimize: () => platform.back.minimize() }));
+}
+
+/**
+ * Point the topbar at whatever server is current.
+ *
+ * Deliberately a function rather than part of `shell()`: the shell is rendered once at
+ * boot, which on a first run is before any server exists. Baking the value in there left
+ * it reading "no server" permanently, even after one had been added and signed into.
+ */
+function refreshServerPill() {
+    const pill = $('#serverPill');
+    if (!pill) return;
+
+    const server = activeServer();
+    pill.textContent = server ? displayAddress(server.origin) : 'no server';
+    pill.classList.toggle('none', !server);
+    pill.title = server ? `${server.label} · ${server.origin}` : 'No server selected yet';
+}
+
+/**
+ * Find out whether the page we are running in was served by a Weave server.
+ *
+ * Only the browser build needs to ask. A desktop app ships blank and always chooses.
+ *
+ * The answer decides whether server management exists at all: served BY Weave means the
+ * origin is the server and there is nothing to choose, while served by anything else means
+ * the app must ask, because a login form aimed at a server that cannot answer is a dead end
+ * with no way out of it.
+ */
+async function locateServer() {
+    if (platform.target !== 'browser') return;
+
+    const origin = platform.defaultOrigin();
+    const found = await discover(origin);
+    noteOriginIsWeave(found.outcome === OUTCOME.OK);
+}
+
+/**
+ * Send an update failure to the server the user is configured against.
+ *
+ * Deliberately to THEIR server, not to us. This is self-hosted software: the person who
+ * can act on a broken update is whoever runs the server, and shipping diagnostics to a
+ * third party by default is not a thing a self-hosted app should do.
+ *
+ * Returns false rather than throwing — the caller is a button, and a rejected promise
+ * there just becomes an unhandled rejection nobody sees.
+ */
+async function sendDiagnostics(report) {
+    const server = activeServer();
+    if (!server || !report?.text) return false;
+    try {
+        // Attributed when possible, anonymous when not. A signed-in report carries the
+        // stored token so the server can name the account; the endpoint accepts either,
+        // because an updater that broke before sign-in still deserves to be heard.
+        const token = await platform.tokens.get(server.id).catch(() => null);
+        const response = await fetch(`${server.origin}/api/diagnostics`, {
+            method: 'POST',
+            headers: {
+                'content-type': 'application/json',
+                ...(token ? { authorization: `Bearer ${token}` } : {}),
+            },
+            credentials: 'omit',
+            body: JSON.stringify({
+                kind: 'update-failure',
+                client: { version: VERSION, target: platform.target },
+                log: report.text,
+            }),
+        });
+        return response.ok;
+    } catch {
+        // The most likely reason an update failed is that the network is unavailable, which
+        // is also the most likely reason this cannot be sent. The log is still on disk.
+        return false;
+    }
+}
+
+/**
+ * Post a stream-quality report to the server the user is configured against.
+ *
+ * The Good/Bad buttons on a stream call this. It lands on the same endpoint as an update
+ * failure and by the same reasoning — to THEIR server, attributed when a token is present,
+ * anonymous when not — but it carries a structured stats payload, serialised into the
+ * endpoint's opaque `log` string so the server stores it without having to understand it.
+ *
+ * Returns false rather than throwing: the caller is a button, and a rejected promise there
+ * becomes an unhandled rejection nobody sees.
+ */
+async function sendStreamReport(kind, payload) {
+    const server = activeServer();
+    if (!server) return false;
+    try {
+        const token = await platform.tokens.get(server.id).catch(() => null);
+        const response = await fetch(`${server.origin}/api/diagnostics`, {
+            method: 'POST',
+            headers: {
+                'content-type': 'application/json',
+                ...(token ? { authorization: `Bearer ${token}` } : {}),
+            },
+            credentials: 'omit',
+            body: JSON.stringify({
+                kind,
+                client: { version: VERSION, target: platform.target },
+                log: JSON.stringify(payload),
+            }),
+        });
+        return response.ok;
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Hand the window over to the room.
+ *
+ * The auth surface and the room do not share a frame: one is a card on a quiet field, the
+ * other is four columns edge to edge. So the room replaces the app element outright rather
+ * than mounting inside the auth shell.
+ */
+async function enterRoom({ api, user, token, server, autoJoin = true }) {
+    showRoute = null;
+    // Features are re-learned at every entry, never trusted from the stored snapshot.
+    // The cached copy dates from when the server was ADDED — a server upgraded since
+    // then would leave whole features (the DM rail, browsing) silently dead here.
+    let features = server?.lastSeen?.features ?? [];
+    try {
+        const info = await api.request('GET', '/api/server-info');
+        if (Array.isArray(info?.features)) {
+            features = info.features;
+            rememberServer({ address: { origin: server.origin }, info });
+        }
+    } catch { /* offline start: the stored snapshot is the best truth available */ }
+
+    // Reads OS idle time where there is a shell to ask, and reports nothing at all in a
+    // browser. `room` is assigned below and long before the first heartbeat, so the lazy
+    // look-up is what lets the link be built before the room that answers for it.
+    let room = null;
+    const idle = createIdleReporter({
+        platform,
+        isWatchingVideo: () => Boolean(room?.isWatchingVideo?.()),
+    });
+
+    const link = createLink({
+        origin: server.origin, token, autoJoin,
+        readIdleMs: () => idle.current(),
+    });
+
+    // Before the markup goes, not after. Replacing the shell removes the canvas but does not
+    // stop the loop drawing into it — that would carry on, unseen, for as long as the room
+    // stayed open, with its visibility listener still attached. Signing out calls boot()
+    // again, which builds a fresh one.
+    authBackground?.destroy();
+    authBackground = null;
+
+    app.innerHTML = '';
+    room = createRoom({
+        mount: app,
+        api,
+        link,
+        user,
+        server,
+        // What this server actually has switched on, learned moments ago.
+        features,
+        // How a Good/Bad click on a stream reaches the server; see sendStreamReport.
+        reportStream: sendStreamReport,
+        onSignedOut(detail) {
+            room.destroy();
+            boot(detail?.notice ?? null);
+        },
+    });
+
+    room.start().then(() => {
+        // After an update, once, over the room it describes. Its own failure is never the
+        // room's: a broken notes dialog must not turn into "could not open the room".
+        try { showWhatsNewIfUpdated(); } catch { /* the notes are a courtesy */ }
+    }).catch((err) => {
+        // Failing to build the room must not leave a blank window with no way out of it.
+        app.innerHTML = safe`
+          <div class="app"><main class="stage">
+            <div class="card auth-card">
+              <h1>Could not open the room</h1>
+              <p class="lead-sub">${err?.message ?? 'Something went wrong.'}</p>
+              <p class="card-foot">Client ${VERSION} · ${platform.target}</p>
+            </div>
+          </main></div>`;
+    });
+
+    link.connect();
+}
+
+/**
+ * An invite link, clicked in a browser, delivered by the OS.
+ *
+ * The link says which server and carries the code. The server is verified by the same
+ * discovery a typed address gets — nothing is stored on the say-so of a URL — and then
+ * the register screen opens with the code already in the field.
+ */
+async function handleDeepLink(raw) {
+    const link = parseDeepLink(raw);
+    if (!link) return;
+    try {
+        const found = await discover(link.server);
+        if (found.outcome !== OUTCOME.OK) return;
+        const record = rememberServer({ address: found.address, info: found.info });
+        setActive(record.id);
+        try { sessionStorage.setItem('weave:pending-invite', link.code); } catch { /* typing works */ }
+        openRegister(location, () => window.dispatchEvent(new HashChangeEvent('hashchange')));
+    } catch { /* an unreachable server ends the gesture; the page said what to do */ }
+}
+
+/**
+ * Sign back in with the saved session, on the phone, once per launch. See auth/resume.js.
+ *
+ * `entered` says the room has been entered. Otherwise the sign-in screen follows, showing
+ * `notice` when there is something to say about why.
+ */
+async function resumeSession() {
+    const server = activeServer();
+    if (!server) return { entered: false, notice: null };
+
+    // Opened from an invite: that is what the person came to do, and signing in to whatever
+    // server was last used would bury it.
+    const launchUrl = await platform.links.launchUrl?.().catch(() => null);
+    if (launchUrl && parseDeepLink(launchUrl)) return { entered: false, notice: null };
+
+    const token = await platform.tokens.get(server.id).catch(() => null);
+    if (!token) return { entered: false, notice: null };
+
+    $('#stage').innerHTML = '<p class="boot-note">Signing you back in…</p>';
+    const api = createApi({ origin: server.origin, token });
+    let outcome;
+    try {
+        const me = await api.request('GET', '/api/me', { timeoutMs: RESUME_TIMEOUT_MS });
+        outcome = resumeOutcome({ user: me?.user });
+    } catch (err) {
+        outcome = resumeOutcome({ status: err?.status ?? 0, message: err?.message ?? null });
+    }
+
+    if (outcome.kind === 'enter') {
+        const autoJoin = createStorage(server.id).get(RESUME_AUTOJOIN_KEY, true) !== false;
+        enterRoom({ api, user: outcome.user, token, server, autoJoin });
+        return { entered: true, notice: null };
+    }
+    if (outcome.clearToken) await platform.tokens.clear(server.id).catch(() => {});
+    platform.log('info', `session resume: ${outcome.clearToken ? 'ended' : 'server unreachable'}`);
+    return { entered: false, notice: outcome.notice };
+}
+
+/** Only the launch resumes. A boot after signing out must land on the sign-in screen. */
+let launched = false;
+
+async function boot(notice = null) {
+    platform.links.onDeepLink(handleDeepLink);
+    app.innerHTML = '';
+    app.append(html(shell()));
+    startAuthBackground();
+
+    // Mounted before anything else, so an update that started at launch is already visible
+    // while the server probe runs. It reports nothing when there is nothing to report.
+    createUpdateBanner({ onSendDiagnostics: sendDiagnostics });
+
+    // Rendered before the probe so a slow or unreachable origin shows something rather than
+    // an empty window.
+    $('#stage').innerHTML = '<p class="boot-note">Looking for a server…</p>';
+    await locateServer();
+
+    const firstBoot = !launched;
+    launched = true;
+    if (firstBoot && platform.session?.resumeOnLaunch) {
+        const resumed = await resumeSession();
+        if (resumed.entered) return;
+        notice = resumed.notice ?? notice;
+    }
+
+    const auth = createAuth({
+        mount: $('#stage'),
+        onSignedIn({ api, user, token, server, autoJoin }) {
+            // Kept so that signing back in at the next launch makes the same choice.
+            createStorage(server.id).set(RESUME_AUTOJOIN_KEY, autoJoin !== false);
+            enterRoom({ api, user, token, server, autoJoin });
+        },
+    });
+
+    const route = () => location.hash.replace('#/', '') || 'signin';
+    const show = async () => { await auth.show(route()); refreshServerPill(); };
+    showRoute = show;
+
+    await show();
+    // Why the person is looking at a login screen they did not ask for — an admin
+    // kicked them, banned them, or wiped the server. Shown once, on the sign-in card.
+    if (notice) {
+        const form = $('#signInForm');
+        const box = form?.querySelector('.form-message');
+        if (box) { box.textContent = notice; box.classList.add('show'); }
+    }
+    // Adding or switching a server does not change the hash, so navigation alone is not a
+    // sufficient signal — the store says when it happened.
+    window.addEventListener('weave:server-changed', refreshServerPill);
+}
+
+boot();

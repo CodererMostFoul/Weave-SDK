@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Weave is self-hosted. A server on a home network is usually plain http and ws on a LAN
+  address, and which address is up to the person running it, so cleartext cannot be limited
+  to a list of domains. https servers are unaffected: their certificates are still checked
+  against the system's trust store, with no user-added authorities.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

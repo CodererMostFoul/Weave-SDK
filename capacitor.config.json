@@ -1,0 +1,13 @@
+{
+  "appId": "io.github.weavespeak.client",
+  "appName": "Weave",
+  "webDir": "dist-mobile",
+  "loggingBehavior": "none",
+  "server": {
+    "androidScheme": "http"
+  },
+  "android": {
+    "appendUserAgent": "WeaveAndroid",
+    "minWebViewVersion": 120
+  }
+}

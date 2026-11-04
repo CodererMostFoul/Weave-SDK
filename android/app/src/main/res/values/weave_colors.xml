@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The brand colours the native side needs, copied from src/styles/tokens.css: the accent
+  gradient the icon is drawn in, and the void the room sits on. Resources cannot read CSS, so
+  test/android-project.test.js checks these still match the tokens.
+-->
+<resources>
+    <color name="weave_accent_hi">#A78BFA</color>   <!-- tokens.css: accent-hi -->
+    <color name="weave_accent_deep">#6D28D9</color> <!-- tokens.css: accent-deep -->
+    <color name="weave_void">#08070F</color>        <!-- tokens.css: bg-void-rgb 8 7 15 -->
+</resources>

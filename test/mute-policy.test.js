@@ -1,0 +1,95 @@
+// The mute policy.
+//
+// Every case here is a bug report or the bug report's neighbours. The original sin was one
+// boolean doing two jobs: with push-to-talk on, pressing the key MUTED a manually-unmuted
+// user — the key gated the stream in exactly the wrong direction.
+
+import test from 'node:test';
+import assert from 'node:assert/strict';
+
+import {
+    effectiveMute, onPushToTalkChange, muteButtonDisabled, pushToMuteAction,
+} from '../src/media/mute-policy.js';
+
+test('without push-to-talk, the standing choice is the whole story', () => {
+    assert.equal(effectiveMute({ muted: false }), false);
+    assert.equal(effectiveMute({ muted: true }), true);
+});
+
+test('with push-to-talk on, the key is the only thing that matters', () => {
+    // THE reported bug: manually unmuted + push-to-talk on. Holding the key must open the
+    // stream and releasing must close it — the standing `muted` flag is not consulted.
+    assert.equal(effectiveMute({ pushToTalk: true, held: false, muted: false }), true,
+        'idle key means closed stream, even for an "unmuted" user');
+    assert.equal(effectiveMute({ pushToTalk: true, held: true, muted: false }), false);
+    assert.equal(effectiveMute({ pushToTalk: true, held: true, muted: true }), false,
+        'the stale standing flag cannot mute a held key');
+});
+
+test('deafened always means not transmitting, whatever else is set', () => {
+    assert.equal(effectiveMute({ deafened: true }), true);
+    assert.equal(effectiveMute({ pushToTalk: true, held: true, deafened: true }), true,
+        'holding the key while deafened must not broadcast to a room you cannot hear');
+});
+
+test('turning push-to-talk on closes the gate immediately', () => {
+    assert.deepEqual(onPushToTalkChange({ turnedOn: true }), { held: false, muted: true });
+});
+
+test('turning push-to-talk off returns to an open microphone', () => {
+    // The other reported bug: switching it off left you muted, hunting for the unmute
+    // button after every settings visit.
+    assert.deepEqual(onPushToTalkChange({ turnedOn: false }), { held: false, muted: false });
+});
+
+test('turning push-to-talk off while deafened stays silent', () => {
+    assert.deepEqual(onPushToTalkChange({ turnedOn: false, deafened: true }),
+        { held: false, muted: true });
+});
+
+test('the mute button is unclickable exactly while push-to-talk owns the stream', () => {
+    assert.equal(muteButtonDisabled({ pushToTalk: true }), true);
+    assert.equal(muteButtonDisabled({ pushToTalk: false }), false);
+    assert.equal(muteButtonDisabled({}), false);
+});
+
+// ── A mute somebody else applied ─────────────────────────────────────────────
+
+test('a server mute outranks every other reason, including push-to-talk being held', () => {
+    // Holding the key is the one thing that reliably OPENS the gate. It must not open this.
+    assert.equal(effectiveMute({ forceMuted: true, pushToTalk: true, held: true }), true);
+    assert.equal(effectiveMute({ forceMuted: true, muted: false, deafened: false }), true);
+    // And it is the only one of the three the person cannot lift.
+    assert.equal(muteButtonDisabled({ forceMuted: true }), true);
+    assert.equal(muteButtonDisabled({ forceMuted: false, pushToTalk: false }), false);
+});
+
+test('lifting a server mute returns the microphone to whatever the person had chosen', () => {
+    assert.equal(effectiveMute({ forceMuted: false, muted: false }), false);
+    assert.equal(effectiveMute({ forceMuted: false, muted: true }), true,
+        'their own mute is still theirs, and survives the administrator lifting theirs');
+});
+
+/* ── push to mute ─────────────────────────────────────────────────────────── */
+
+test('push to mute closes an open microphone, and says so with the mute sound', () => {
+    assert.deepEqual(pushToMuteAction({ muted: false }), { muted: true, cue: 'mute' });
+});
+
+test('push to mute opens a muted microphone, and says so with the unmute sound', () => {
+    assert.deepEqual(pushToMuteAction({ muted: true }), { muted: false, cue: 'unmute' });
+});
+
+test('push to mute does nothing at all where the mute button could not either', () => {
+    // Under push-to-talk the other key owns the stream; under a server mute nobody but an
+    // administrator does. A sound here would tell somebody in a game something untrue.
+    assert.equal(pushToMuteAction({ pushToTalk: true, muted: false }), null);
+    assert.equal(pushToMuteAction({ forceMuted: true, muted: true }), null);
+});
+
+test('push to mute does nothing while deafened, where an unmute would be a lie', () => {
+    // The server holds a deafened person muted whatever they ask for. Playing "you are live"
+    // with the microphone still closed is worse than doing nothing.
+    assert.equal(pushToMuteAction({ deafened: true, muted: true }), null);
+    assert.equal(pushToMuteAction({ deafened: true, muted: false }), null);
+});

@@ -1,0 +1,103 @@
+import groovy.json.JsonSlurper
+
+apply plugin: 'com.android.application'
+apply plugin: 'org.jetbrains.kotlin.android'
+
+// One version for every build. package.json is the source of truth, as it is for the
+// desktop installer; this file only derives Android's two numbers from it.
+//
+// versionCode must only ever grow — Android refuses an update whose code is lower than the
+// installed one — so it is MAJOR * 1,000,000 + MINOR * 1,000 + PATCH, which grows exactly
+// when semver does as long as minor and patch stay under 1000. The same formula lives in
+// scripts/android-version.mjs, and test/android-project.test.js holds the two together.
+def weaveVersion = new JsonSlurper().parse(file('../../package.json')).version as String
+def weaveVersionCode = {
+    def parts = weaveVersion.tokenize('-')[0].tokenize('.').collect { it as int }
+    if (parts.size() != 3) throw new GradleException("package.json version '${weaveVersion}' is not MAJOR.MINOR.PATCH")
+    if (parts[1] >= 1000 || parts[2] >= 1000) throw new GradleException("minor and patch must stay under 1000 for versionCode to keep growing ('${weaveVersion}')")
+    return parts[0] * 1_000_000 + parts[1] * 1_000 + parts[2]
+}()
+
+// Release signing comes from outside the repository, or not at all: a key checked in is a
+// key anyone can publish updates with. Without the file a release build is simply unsigned.
+def signingFile = new File(System.getProperty('user.home'), '.weave/android-signing.properties')
+def signing = new Properties()
+if (signingFile.exists()) signingFile.withInputStream { signing.load(it) }
+
+android {
+    namespace = "io.github.weavespeak.client"
+    compileSdk = rootProject.ext.compileSdkVersion
+    defaultConfig {
+        applicationId "io.github.weavespeak.client"
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+        versionCode weaveVersionCode
+        versionName weaveVersion
+        manifestPlaceholders = [appLabel: "Weave"]
+        aaptOptions {
+             // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
+             // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
+            ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+        }
+    }
+    signingConfigs {
+        if (signing.getProperty('storeFile')) {
+            release {
+                storeFile new File(signing.getProperty('storeFile'))
+                storePassword signing.getProperty('storePassword')
+                keyAlias signing.getProperty('keyAlias')
+                keyPassword signing.getProperty('keyPassword')
+            }
+        }
+    }
+    buildTypes {
+        debug {
+            // Installs beside the released app instead of over it, so testing a build never
+            // costs the sideloaded one its sessions — and a debug key can never be asked to
+            // update a release-signed install, which Android would refuse anyway.
+            applicationIdSuffix '.dev'
+            versionNameSuffix '-dev'
+            manifestPlaceholders = [appLabel: "Weave Dev"]
+        }
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            if (signing.getProperty('storeFile')) signingConfig signingConfigs.release
+        }
+    }
+}
+
+kotlin {
+    compilerOptions {
+        // Matches the Java level capacitor.build.gradle sets; the two must agree.
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_21)
+    }
+}
+
+repositories {
+    flatDir{
+        dirs '../capacitor-cordova-android-plugins/src/main/libs', 'libs'
+    }
+}
+
+dependencies {
+    implementation fileTree(include: ['*.jar'], dir: 'libs')
+    implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
+    implementation "androidx.activity:activity:$androidxActivityVersion"
+    implementation "androidx.core:core:$androidxCoreVersion"
+    implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
+    implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
+    implementation project(':capacitor-android')
+    implementation project(':capacitor-cordova-android-plugins')
+}
+
+apply from: 'capacitor.build.gradle'
+
+try {
+    def servicesJSON = file('google-services.json')
+    if (servicesJSON.text) {
+        apply plugin: 'com.google.gms.google-services'
+    }
+} catch(Exception e) {
+    logger.info("google-services.json not found, google-services plugin not applied. Push Notifications won't work")
+}

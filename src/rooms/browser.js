@@ -1,0 +1,299 @@
+// The room browser.
+//
+// "Where is everyone" is a different question from "what rooms exist", and the sidebar only
+// answers the second one well. A list of names with a number beside each is fine for
+// switching between rooms you already know; it is poor for deciding where to go, because
+// the thing you actually want — who is in there — is the part it compresses to a digit.
+//
+// So this is cards: each room shows who is in it by face, and the whole point is that you
+// pick a room by seeing the people in it.
+//
+// What is deliberately NOT here: room descriptions and capacities. The design shows both,
+// and the server stores neither. Inventing "2 of 40" from nothing would be a number that
+// looks authoritative and means nothing at all.
+
+import { esc } from '../ui/dom.js';
+import { icons } from '../room/icons.js';
+import { avatar } from '../room/views/parts.js';
+
+/** How many faces fit on a card before the rest become a count. */
+const FACE_LIMIT = 5;
+
+export const FILTERS = [
+    { id: 'all', label: 'All rooms' },
+    { id: 'live', label: 'Live only' },
+];
+
+/**
+ * What a room is doing, in one word.
+ *
+ * The AFK room is the reason this is not just "empty or not": people parked there are
+ * present but not available, and a card that calls that "live" would send you somewhere
+ * nobody is actually talking.
+ */
+export function roomState(room) {
+    const count = room.occupants?.length ?? 0;
+    if (!count) return { key: 'empty', label: 'empty' };
+    if (room.kind === 'afk') return { key: 'idle', label: `${count} idle` };
+    return { key: 'live', label: `${count} live` };
+}
+
+/** What the button on a card should say. */
+export function actionFor(room) {
+    if (room.current) return { label: 'You are here', disabled: true };
+    if (room.kind === 'text') return { label: 'Open', disabled: false };
+    return (room.occupants?.length ?? 0) ? { label: 'Join', disabled: false } : { label: 'Start it', disabled: false };
+}
+
+export function applyFilter(rooms, filter) {
+    if (filter === 'live') return rooms.filter((r) => (r.occupants?.length ?? 0) > 0);
+    return rooms;
+}
+
+/** A short, true summary of the whole server. */
+export function headline(rooms) {
+    const live = rooms.filter((r) => (r.occupants?.length ?? 0) > 0);
+    const people = new Set(live.flatMap((r) => (r.occupants ?? []).map((p) => p.id ?? p.username)));
+
+    if (!people.size) return 'Nobody is in a room right now. Start one.';
+    const rooms_ = live.length === 1 ? 'room' : 'rooms';
+    const are = people.size === 1 ? 'is' : 'are';
+    return `${people.size} ${people.size === 1 ? 'person' : 'people'} ${are} in ${live.length} ${rooms_}.`;
+}
+
+const faces = (occupants = []) => {
+    const shown = occupants.slice(0, FACE_LIMIT);
+    const extra = occupants.length - shown.length;
+    return `
+      <span class="face-stack">
+        ${shown.map((p) => avatar(p, { size: 'sm', presence: false })).join('')}
+        ${extra > 0 ? `<span class="face-more">+${esc(extra)}</span>` : ''}
+      </span>`;
+};
+
+function card(room) {
+    const state = roomState(room);
+    const action = actionFor(room);
+    const occupants = room.occupants ?? [];
+
+    return `
+    <li class="room-card${room.current ? ' current' : ''}" data-room-card="${esc(room.id)}">
+      <div class="card-head" style="--card-hue: ${esc(hueFor(room.name))}">
+        <span class="card-icon">${room.kind === 'text' ? '#' : icons.speaker}</span>
+        <span class="card-name">${esc(room.name)}</span>
+        <span class="card-state ${esc(state.key)}">${esc(state.label)}</span>
+      </div>
+
+      <div class="card-body">
+        ${occupants.length
+        ? faces(occupants)
+        : '<span class="card-empty">No one here yet</span>'}
+      </div>
+
+      <div class="card-foot">
+        <span class="card-who">
+          ${occupants.length
+        ? esc(occupants.slice(0, 3).map((p) => p.displayName ?? p.username).join(', ')
+              + (occupants.length > 3 ? ` and ${occupants.length - 3} more` : ''))
+        : ''}
+        </span>
+        <button type="button" class="btn card-action${action.disabled ? '' : ' primary'}"
+                data-enter="${esc(room.id)}" ${action.disabled ? 'disabled' : ''}>
+          ${esc(action.label)}
+        </button>
+      </div>
+    </li>`;
+}
+
+/**
+ * A stable colour per room, so a card is recognisable before it is read.
+ *
+ * The same hash the avatars use, for the same reason: nothing stored, nothing to
+ * synchronise, and identical on every client.
+ */
+export function hueFor(name) {
+    let h = 0;
+    const text = String(name ?? '');
+    for (let i = 0; i < text.length; i++) h = (h * 31 + text.charCodeAt(i)) & 0xffff;
+    return h % 360;
+}
+
+export function browserView({ rooms = [], filter = 'all', canCreate = false } = {}) {
+    const shown = applyFilter(rooms, filter);
+
+    return `
+    <div class="browser">
+      <header class="browser-head">
+        <div>
+          <h2 class="panel-title">Where is everyone?</h2>
+          <p class="panel-lead">${esc(headline(rooms))}</p>
+        </div>
+        <span class="browser-spacer"></span>
+        <div class="chips" role="group" aria-label="Filter rooms">
+          ${FILTERS.map((f) => `
+            <button type="button" class="chip${f.id === filter ? ' current' : ''}"
+                    data-filter="${esc(f.id)}" aria-pressed="${f.id === filter}">
+              ${esc(f.label)}
+            </button>`).join('')}
+        </div>
+        ${canCreate
+        ? '<button type="button" class="btn primary" data-new-room-here>Create a room</button>'
+        : ''}
+        <button type="button" class="icon-btn" data-close-browser aria-label="Close">✕</button>
+      </header>
+
+      ${shown.length
+        ? `<ul class="room-cards">${shown.map(card).join('')}</ul>`
+        : `<p class="browser-empty">${filter === 'live'
+            ? 'No one is in a room at the moment.'
+            : 'This server has no rooms yet.'}</p>`}
+
+      ${canCreate
+        ? ''
+        : `<p class="browser-note">
+             Only an administrator can create rooms on this server.
+           </p>`}
+    </div>`;
+}
+
+/** The create form, shown inside the browser modal in place of the cards. */
+export function createRoomForm({ error = '', busy = false, isAdmin = false, canPrivate = false } = {}) {
+    return `
+    <div class="browser">
+      <header class="browser-head">
+        <div>
+          <h2 class="panel-title">A new room</h2>
+          <p class="panel-lead">Everyone on the server will see it the moment it exists.</p>
+        </div>
+        <span class="browser-spacer"></span>
+        <button type="button" class="icon-btn" data-cancel-create aria-label="Back">✕</button>
+      </header>
+
+      <form class="create-room" data-create-room-form>
+        <div class="field">
+          <label for="newRoomName">Name</label>
+          <input id="newRoomName" name="name" required maxlength="40" autocomplete="off"
+                 spellcheck="false" placeholder="e.g. planning, den, patch-notes" data-initial-focus>
+          <div class="field-error">${esc(error)}</div>
+        </div>
+
+        <div class="kind-pick" role="radiogroup" aria-label="What kind of room">
+          ${isAdmin ? `
+          <label class="kind-card">
+            <input type="radio" name="kind" value="both" checked>
+            <span class="kind-name">${icons.speaker} Voice room</span>
+            <span class="kind-hint">People talk. Chat runs alongside.</span>
+          </label>
+          <label class="kind-card">
+            <input type="radio" name="kind" value="text">
+            <span class="kind-name"><span class="room-hash" aria-hidden="true">#</span> Text strand</span>
+            <span class="kind-hint">Writing only. Open it from anywhere.</span>
+          </label>` : ''}
+          ${canPrivate ? `
+          <label class="kind-card">
+            <input type="radio" name="kind" value="private" ${isAdmin ? '' : 'checked'}>
+            <span class="kind-name">${icons.lock} Private huddle</span>
+            <span class="kind-hint">Only members see who is inside. No chat.
+              Gone after standing empty a while.</span>
+          </label>` : ''}
+        </div>
+
+        <div class="create-actions">
+          <button type="button" class="btn" data-cancel-create>Back</button>
+          <button type="submit" class="btn primary" ${busy ? 'disabled' : ''}>
+            ${busy ? 'Creating…' : 'Create it'}
+          </button>
+        </div>
+      </form>
+    </div>`;
+}
+
+/* ── the controller ───────────────────────────────────────────────────────── */
+
+/**
+ * Open the browser over the room.
+ *
+ * It subscribes to the same state the room does, so the cards move as people move. A
+ * browser that shows a snapshot from when you opened it is worse than the sidebar: you pick
+ * the busy room and arrive to find it empty, having been told otherwise a second earlier.
+ */
+export function createRoomBrowser({ state, onEnter, onCreate = null, canCreate = false, isAdmin = false, canPrivate = false, createModal, dom }) {
+    const { $, $$ } = dom;
+    let filter = 'all';
+    let unsubscribe = null;
+    let creating = false;   // showing the form instead of the cards
+
+    const modal = createModal({
+        className: 'browser-modal',
+        label: 'Rooms',
+        onClose: () => { unsubscribe?.(); unsubscribe = null; },
+    });
+
+    function render(formState = {}) {
+        modal.setContent(creating
+            ? createRoomForm({ ...formState, isAdmin, canPrivate })
+            : browserView({ rooms: state.toShell().rooms, filter, canCreate }));
+        wire();
+    }
+
+    function wire() {
+        $$('[data-filter]', modal.element).forEach((button) => {
+            button.addEventListener('click', () => {
+                filter = button.dataset.filter;
+                render();
+            });
+        });
+
+        $$('[data-enter]', modal.element).forEach((button) => {
+            button.addEventListener('click', () => {
+                onEnter(button.dataset.enter);
+                modal.close();
+            });
+        });
+
+        $('[data-close-browser]', modal.element)?.addEventListener('click', () => modal.close());
+
+        $('[data-new-room-here]', modal.element)?.addEventListener('click', () => {
+            creating = true;
+            render();
+            $('#newRoomName', modal.element)?.focus();
+        });
+        $$('[data-cancel-create]', modal.element).forEach((b) => b.addEventListener('click', () => {
+            creating = false;
+            render();
+        }));
+        $('[data-create-room-form]', modal.element)?.addEventListener('submit', async (event) => {
+            event.preventDefault();
+            const form = event.currentTarget;
+            const name = form.name.value.trim();
+            const kind = form.kind.value;
+            if (!name) return;
+            render({ busy: true });
+            try {
+                const channel = await onCreate?.(kind === 'private'
+                    ? { name, kind: 'both', private: true }
+                    : { name, kind });
+                creating = false;
+                modal.close();
+                // The maker lands in what they made.
+                if (channel?.id) onEnter(channel.id);
+            } catch (err) {
+                creating = true;
+                render({ error: err?.message ?? 'The server refused that.' });
+                const input = $('#newRoomName', modal.element);
+                if (input) { input.value = name; input.focus(); }
+            }
+        });
+    }
+
+    return {
+        open(from) {
+            modal.open({ from, content: '' });
+            render();
+            // Repaint as people arrive and leave. Cheap: the whole browser is one small
+            // list, and it is only mounted while it is being looked at.
+            unsubscribe = state.subscribe(() => { if (modal.isOpen) render(); });
+        },
+        close: () => modal.close(),
+    };
+}

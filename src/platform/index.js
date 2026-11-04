@@ -1,0 +1,273 @@
+// The platform adapter.
+//
+// One codebase, three modes: a browser, the desktop shell, and the Android app. Everything
+// that genuinely differs between them is behind this interface, so the rest of the app never
+// asks which it is. The Android app is built in mobile.js on top of the browser's answers.
+//
+// The difference that matters most is not cosmetic. In BROWSER mode the app was served BY
+// the server it talks to, so the address is `location.origin` and cannot be changed —
+// a page served over https physically cannot connect to a different http server, and
+// pointing it at another https server would fail CORS on the credentialed routes anyway.
+// In DESKTOP mode there is no origin to inherit: the app ships blank and must be told.
+//
+// So server management is not "hidden" in browser mode. It does not exist there.
+
+/* global __WEAVE_TARGET__, __WEAVE_VERSION__ */
+
+import { createMobilePlatform } from './mobile.js';
+// The Android bridge in the mobile build, null everywhere else (see native-none.js).
+import { bridge as nativeBridge } from '#native';
+
+export const TARGET = typeof __WEAVE_TARGET__ === 'string' ? __WEAVE_TARGET__ : 'browser';
+export const VERSION = typeof __WEAVE_VERSION__ === 'string' ? __WEAVE_VERSION__ : '0.0.0';
+
+export const isDesktop = TARGET === 'desktop';
+export const isMobile = TARGET === 'mobile';
+// Named, not derived as "not desktop": with a third target, "not desktop" would call the
+// Android app a browser, and a browser is the one build that inherits its server.
+export const isBrowser = TARGET === 'browser';
+
+/**
+ * Storage.
+ *
+ * Namespaced per server, always. The previous client used flat keys like `weave.micGate`
+ * and keyed per-user volumes by bare nickname, which was fine when a client could only
+ * ever reach one server. A client that can reach several would have silently applied one
+ * server's settings to another, and muted "dan" everywhere because you muted a different
+ * "dan" somewhere else.
+ */
+export function createStorage(scope) {
+    const prefix = scope ? `weave:${scope}:` : 'weave:';
+    return {
+        get(key, fallback = null) {
+            try {
+                const raw = localStorage.getItem(prefix + key);
+                return raw === null ? fallback : JSON.parse(raw);
+            } catch {
+                return fallback;
+            }
+        },
+        set(key, value) {
+            try {
+                localStorage.setItem(prefix + key, JSON.stringify(value));
+            } catch {
+                // Quota or a private window. Losing a preference is not worth an error.
+            }
+        },
+        remove(key) {
+            try { localStorage.removeItem(prefix + key); } catch { /* as above */ }
+        },
+    };
+}
+
+/**
+ * Where a session token lives.
+ *
+ * In the browser it stays in memory only — a token in localStorage is readable by any
+ * script that gets onto the page, and the server issues a fresh one on every sign-in
+ * anyway. Desktop overrides this with the OS credential store, which is the whole reason
+ * "stay signed in" is a desktop-only option.
+ */
+function memoryTokenStore() {
+    const held = new Map();
+    return {
+        available: false,
+        async get(serverId) { return held.get(String(serverId)) ?? null; },
+        async set(serverId, token) { held.set(String(serverId), token); return false; },
+        async clear(serverId) { held.delete(String(serverId)); return false; },
+    };
+}
+
+/**
+ * Whether the origin that served this page is itself a Weave server. `null` until checked.
+ *
+ * The browser build normally inherits its server from wherever it was served, and that is
+ * the right default — it is the only server such a page can reach. But the assumption is
+ * not guaranteed. A development server, a static host, or a misconfigured deployment can
+ * all serve this page without being a Weave server at all, and when that happens the app
+ * would otherwise show a sign-in form aimed at something that cannot answer, with no way to
+ * point it anywhere else. That is a dead end, so the build asks rather than assuming.
+ */
+let originIsWeave = null;
+
+/** Recorded once at boot, after the browser build probes its own origin. */
+export function noteOriginIsWeave(value) {
+    originIsWeave = value === true;
+}
+
+/**
+ * Updates.
+ *
+ * A browser build is updated by reloading the page, so there is nothing to report and
+ * nothing to install. It says so rather than throwing: the login screen asks about update
+ * state on every boot, and a capability that throws when absent turns "no updater here"
+ * into an error the user has to see.
+ */
+const noUpdates = {
+    available: false,
+    async state() { return { status: 'unsupported' }; },
+    async install() { return false; },
+    onChange() { return () => {}; },
+};
+
+/**
+ * Saved sign-in details.
+ *
+ * The browser build deliberately has none. A browser already has a password manager, it is
+ * better than anything we would write, and the user already trusts it — competing with it
+ * by keeping a second copy of their password in localStorage would be strictly worse.
+ * `available: false` is what makes the "Remember me" box absent there rather than broken.
+ */
+const noCredentials = {
+    available: false,
+    async get() { return null; },
+    async set() { return false; },
+    async clear() { return false; },
+};
+
+/**
+ * Global shortcuts.
+ *
+ * A web page cannot hear a key pressed in another program, and there is no permission that
+ * changes that. `available: false` is what tells the room to listen for the key itself,
+ * which works exactly as long as the page has focus.
+ */
+const noHotkeys = {
+    available: false,
+    async set() { return { ok: false, error: 'unsupported' }; },
+    onPress() { return () => {}; },
+};
+
+const browserPlatform = {
+    target: 'browser',
+    version: VERSION,
+
+    credentials: noCredentials,
+
+    updates: noUpdates,
+    hotkeys: noHotkeys,
+    // A browser has no log file to offer. A bug report from one is the description alone,
+    // which is still worth sending — most of a report is what the person says anyway.
+    diagnostics: {
+        available: false, async read() { return null; }, async readAppLog() { return null; },
+        async openFolder() {},
+    },
+    links: { available: false, onDeepLink() {} },
+    // In a browser the browser's own picker appears inside getDisplayMedia; onPick
+    // simply never fires.
+    share: { available: false, onPick() {}, answer() {} },
+
+    // The server that served this page. Not configurable and not presented as if it were —
+    // but only once it has actually answered as a Weave server.
+    get canChooseServer() { return originIsWeave === false; },
+    /** true, false, or null while the probe is still in flight. */
+    get servedByWeave() { return originIsWeave; },
+    defaultOrigin: () => window.location.origin,
+
+    tokens: memoryTokenStore(),
+
+    /** Browsers do not tell a page whether it is online in any trustworthy way, but this
+     *  is still better than nothing for an obviously-offline machine. */
+    isOnline: () => navigator.onLine !== false,
+
+    /**
+     * Whether the machine is being used. A browser cannot see input to other windows, and
+     * there is no approximation worth making — so this reports nothing and the server
+     * keeps using the signal it already had.
+     */
+    power: { available: false, idleSeconds: null },
+
+    /**
+     * Something worth finding later. A browser has no log file, so its console is the
+     * nearest thing; the desktop build writes into the app log, which is what a bug report
+     * attaches — a failure that only reaches a console is one no report will ever contain.
+     */
+    log(level, message) {
+        const write = console[level] ?? console.log;
+        write.call(console, `[weave] ${message}`);
+    },
+};
+
+const desktopPlatform = {
+    ...browserPlatform,
+    target: 'desktop',
+    // A desktop app ships blank: there is no origin to inherit, so there is nothing to probe
+    // and the answer is always yes.
+    canChooseServer: true,
+    servedByWeave: false,
+    defaultOrigin: () => null,
+
+    // Replaced at runtime by the Electron preload bridge when it is present. Until the
+    // shell exists this falls back to memory, so the web build of the desktop UI still runs
+    // in a normal browser during development.
+    tokens: (typeof window !== 'undefined' && window.weaveNative?.tokens)
+        ? window.weaveNative.tokens
+        : memoryTokenStore(),
+
+    credentials: (typeof window !== 'undefined' && window.weaveNative?.credentials)
+        ? window.weaveNative.credentials
+        : noCredentials,
+
+    // Present only when the Electron bridge is. Running the desktop UI in a plain browser
+    // during development is a supported thing to do, and it must not explode.
+    updates: (typeof window !== 'undefined' && window.weaveNative?.updates)
+        ? { available: true, ...window.weaveNative.updates }
+        : noUpdates,
+
+    share: (typeof window !== 'undefined' && window.weaveNative?.share)
+        ? { available: true, ...window.weaveNative.share }
+        : { available: false, onPick() {}, answer() {} },
+
+    // Process-isolated screen-share audio. Present only with the Electron bridge; in a plain
+    // browser (dev) it reports unavailable, and the media layer falls back to loopback. THIS
+    // line is what makes the capture reachable at all — without it platform.processAudio is
+    // undefined and the sidecar is never asked to run.
+    processAudio: (typeof window !== 'undefined' && window.weaveNative?.processAudio)
+        ? window.weaveNative.processAudio
+        : {
+            available: false,
+            async start() { return { ok: false, reason: 'unsupported' }; },
+            stop() {},
+            onData() { return () => {}; },
+            onEnd() { return () => {}; },
+        },
+    links: (typeof window !== 'undefined' && window.weaveNative?.links)
+        ? { available: true, ...window.weaveNative.links }
+        : { available: false, onDeepLink() {} },
+    diagnostics: (typeof window !== 'undefined' && window.weaveNative?.diagnostics)
+        ? { available: true, ...window.weaveNative.diagnostics }
+        : {
+            available: false, async read() { return null; }, async readAppLog() { return null; },
+            async openFolder() {},
+        },
+
+    // Absent when the desktop UI is run in a plain browser during development, which is a
+    // supported thing to do — so this degrades to the browser answer rather than throwing.
+    power: (typeof window !== 'undefined' && window.weaveNative?.power)
+        ? { available: true, ...window.weaveNative.power }
+        : { available: false, idleSeconds: null },
+
+    // Shortcuts that work while another program is in front. Absent in a plain browser,
+    // where the room falls back to listening for the key itself while the page has focus.
+    hotkeys: (typeof window !== 'undefined' && window.weaveNative?.hotkeys)
+        ? { available: true, ...window.weaveNative.hotkeys }
+        : noHotkeys,
+
+    // The preload's log channel, so a renderer failure lands in the same file as the main
+    // process's lines. The console fallback keeps the desktop UI runnable in a plain browser.
+    log(level, message) {
+        try {
+            if (typeof window !== 'undefined' && window.weaveNative?.log) {
+                window.weaveNative.log(level, String(message));
+                return;
+            }
+        } catch { /* a bridge on its way out; the console still works */ }
+        browserPlatform.log(level, message);
+    },
+};
+
+// The mobile build gets the Capacitor bridge. Run in a desktop browser (`npm run dev:mobile`)
+// that bridge is null, and the app runs on the browser's answers with a blank server list.
+export const platform = isDesktop ? desktopPlatform
+    : isMobile ? createMobilePlatform(browserPlatform, nativeBridge)
+        : browserPlatform;

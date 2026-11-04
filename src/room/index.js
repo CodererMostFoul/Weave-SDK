@@ -1,0 +1,3348 @@
+// The room.
+//
+// Mounts the shell, keeps it in step with the server, and turns clicks into messages on the
+// wire. This is the only file here that touches the DOM or the network; the views are pure
+// and the state store is synchronous, which is what keeps this one small enough to follow.
+//
+// Rendering is by REGION, not wholesale. Replacing the whole shell on every event would be
+// simpler to write and awful to use: it would blow away half-typed messages, drop focus
+// mid-keystroke, and reset the scroll position every time somebody said something. So each
+// region has its own container and its own update, and the composer is never re-rendered at
+// all.
+
+import { shell, connection as connectionPill } from './shell.js';
+import { roomGroups, selfBar } from './views/sidebar.js';
+import { rail, dmSearchView, dmSearchResults } from './views/rail.js';
+import { messageList, typingLine, voiceNoticeMarkup, emptyState, roomGlyph } from './views/timeline.js';
+import { createRoomState } from './state.js';
+import { WeaveBackground, createMessageNoise, voiceNoise } from '../ui/weave-background.js';
+import { LoomRenderer } from '../ui/loom.js';
+import { createVoiceTraces } from '../ui/voice-trace.js';
+import { createVoice } from '../media/voice.js';
+import { describeLink } from '../net/link.js';
+import { effectiveMute, onPushToTalkChange, muteButtonDisabled, pushToMuteAction } from '../media/mute-policy.js';
+import { acceleratorFor, matchesKeydown } from '../ui/hotkey.js';
+import {
+    screenShareSettings, normaliseShareChoice, cameraConstraints, cameraEncodings, canShareScreen,
+} from '../media/presets.js';
+import { settingsFor } from '../server/store.js';
+import { classify } from '../media/stream-report.js';
+import { captureProcessAudio } from '../media/process-audio.js';
+import { micConstraints } from '../media/audio-options.js';
+import { playCue } from '../media/cue.js';
+import { createSettings, readPrefs } from '../settings/index.js';
+import { openWhatsNew } from '../updates/whats-new.js';
+import { createRoomBrowser } from '../rooms/browser.js';
+import { createPeerActions } from './peer-actions.js';
+import { createAvatarCache, withAvatars } from './avatars.js';
+import { createBubbles } from './bubbles.js';
+import { createModal } from '../ui/modal.js';
+import { platform } from '../platform/index.js';
+import { userHue } from '../ui/hue.js';
+import { mentionQuery, matchMentions, insertMention } from './mentions.js';
+import {
+    parseCommand, commandQuery, matchCommands, completeCommand, resultItem, refusalItem, COMMAND_REFUSALS,
+} from './commands.js';
+import { freshHistory, advanceHistory, nextPageQuery, shouldLoadOlder } from './history.js';
+import { stageView, tileKey, sharePickerView, shareSetupView, MAX_WATCHED } from './views/stage.js';
+import { stageSignature, stagePaintDecision } from './stage-paint.js';
+import { createStreamCues } from './stream-cues.js';
+import { messageCue } from './notify.js';
+import { extractUrls } from './embeds.js';
+import { avatar } from './views/parts.js';
+import { esc } from '../ui/dom.js';
+import { $, $$, html, safe } from '../ui/dom.js';
+
+/** Close enough to the bottom that the reader is following along. */
+const STICK_PX = 80;
+
+/**
+ * Loud enough to count as talking.
+ *
+ * Above room tone and breathing, below a quiet voice. Too low and everyone glows
+ * permanently, which is the same as nobody glowing.
+ */
+const SPEAKING_AT = 0.055;
+
+/**
+ * How long the ring stays after someone stops.
+ *
+ * Speech is full of gaps — every consonant is a moment of near-silence — so a ring driven
+ * straight off the level strobes on every syllable. Holding it briefly turns a flicker into
+ * a signal.
+ */
+const SPEAKING_HOLD_MS = 450;
+
+/** How long to wait for an animation frame before painting anyway. */
+const PAINT_FLOOR_MS = 100;
+
+/**
+ * How long a fullscreen tile may sit without a stream before it counts as over.
+ *
+ * Long enough to cover a re-consume — a reconcile, an ICE repair — and short enough that a
+ * share which really ended does not leave somebody staring at a frozen frame wondering.
+ */
+const FULLSCREEN_HOLD_MS = 2000;
+
+/** How long a tapped tile keeps its controls up — the same linger the hover gets. */
+const TILE_CONTROLS_MS = 3000;
+
+// The sounds the app ships with, bundled beside it; under weave:// and vite alike these
+// resolve to real URLs, and vite emits the files with the build. The stream chimes are the
+// web app's. The mute pair answers the push-to-mute shortcut, and is the app's own rather
+// than anybody's chosen join or leave sound: it is the only thing telling somebody in a
+// game which way they just switched their microphone, so it must mean one thing everywhere.
+// (They are the web app's join and leave chimes, which is exactly why those are not ALSO
+// played for arrivals here — the sounds module does that, with sounds of its own.) The
+// message chime is the web app's too; see notify.js for when it plays.
+const BUNDLED_CUE_URLS = {
+    start: new URL('../assets/sounds/stream_start.ogg', import.meta.url).href,
+    end: new URL('../assets/sounds/stream_end.ogg', import.meta.url).href,
+    mute: new URL('../assets/sounds/mic_mute.ogg', import.meta.url).href,
+    unmute: new URL('../assets/sounds/mic_unmute.ogg', import.meta.url).href,
+    message: new URL('../assets/sounds/new_text.ogg', import.meta.url).href,
+};
+
+export function createRoom({ mount, api, link, user, server, features = [], reportStream = () => Promise.resolve(false), onSignedOut }) {
+    const state = createRoomState({
+        me: user,
+        server: { name: server?.lastSeen?.name ?? server?.label ?? 'Weave' },
+    });
+
+    let background = null;
+    let loom = null;
+    // Created once and re-parented after every render. #roomScroll's innerHTML is replaced
+    // wholesale on any roster change, so a canvas built inside the markup would be thrown
+    // away — and rebuilt, and restarted — several times a minute.
+    let loomCanvas = null;
+    // Levels arrive ten times a second; the loom draws sixty. These fill in the gap and
+    // add the onset bounce, which the media layer has no concept of. See voice-trace.js.
+    const loomTraces = createVoiceTraces();
+    let painting = false;
+    let voiceLevels = new Map();
+    const speakingUntil = new Map();   // username -> when the ring may fade
+    // Text rooms breathe too: the strands pulse with message rate, exactly as the previous
+    // client did. Without this a text channel is a room full of people and a dead canvas.
+    const msgNoise = createMessageNoise();
+    const history = new Map();   // channelId -> paging bookkeeping (see history.js)
+
+    /** The people standing in MY room right now, producers and all — the sync's truth. */
+    const roomPeers = () => [...state.raw.peers.values()]
+        .filter((p) => p.channelId === state.raw.currentChannelId && p.cid !== state.raw.selfCid);
+
+    // The self-heal beat: cheap when nothing is wrong (two set-diffs), decisive when a
+    // frame was lost. Fifteen seconds keeps "X can't hear Y" from ever lasting a minute.
+    const syncTimer = setInterval(() => {
+        if (state.raw.currentChannelId) voice.sync(roomPeers()).catch(() => {});
+    }, 15_000);
+
+    // The pill's "opus 64 kb/s": polled while voice is up, blank otherwise.
+    let mediaStats = { codec: null, bitrateKbps: null };
+    const statsTimer = setInterval(async () => {
+        const next = (await voice.mediaStats().catch(() => null)) ?? { codec: null, bitrateKbps: null };
+        if (next.codec !== mediaStats.codec || next.bitrateKbps !== mediaStats.bitrateKbps) {
+            mediaStats = next;
+            paintConnection({ ...state.raw.connection, ...mediaStats });
+        }
+    }, 5_000);
+
+    // While a screen is on the stage — yours or one you are watching — keep a short rolling
+    // history of its quality, so a Good/Bad click carries the run-up to a freeze rather than
+    // only the calm after it. Cheap: one getStats per active screen every couple of seconds,
+    // and nothing at all when the stage holds no video. The webcam is deliberately not
+    // sampled — a frozen face is nobody's emergency, and the report is about screen shares.
+    const streamDiagTimer = setInterval(() => {
+        // Only testers can report, so only testers need the rolling history sampled. For
+        // everyone else this timer is a no-op — no getStats, no buffer, nothing.
+        if (!user?.isTester) return;
+        for (const key of videoStreams.keys()) {
+            const [cid, slotName] = key.split(':');
+            if (slotName !== 'screen') continue;
+            voice.sampleStream({ role: cid === 'self' ? 'streamer' : 'viewer', cid, slot: slotName })
+                .catch(() => {});
+        }
+    }, 2_000);
+
+    /**
+     * Turn a Good/Bad click into a report. The clicked tile names the stream (`cid:slot`),
+     * which says whether this client is the STREAMER of it (self) or a VIEWER — and therefore
+     * which half of the metrics it holds. A client-side verdict is computed now with no Pi
+     * stamp; the server re-decides with the media-core load only it can see. Both Good and Bad
+     * are sent: a baseline is what a bad sample is compared against.
+     */
+    async function reportStreamQuality(bad, holder, clicked) {
+        const [cid, slotName] = holder.dataset.tile.split(':');
+        const self = cid === 'self';
+        const role = self ? 'streamer' : 'viewer';
+        // Capture THIS instant at full fidelity before reading the buffer. The background
+        // sampler runs every couple of seconds; a slight moment of lag the person reacted to
+        // could fall between two of those ticks, so take a fresh sample now — the click's own
+        // moment belongs in the report, not just the last one that happened to be timed.
+        await voice.sampleStream({ role, cid, slot: slotName }).catch(() => {});
+        const { samples, latest } = voice.streamReport({ role, cid, slot: slotName });
+        const verdict = latest ? classify({ ...latest, pi: null })
+            : { verdict: 'no-samples', reasons: ['no samples were captured before the click'] };
+        const peer = self ? null : [...state.raw.peers.values()].find((p) => p.cid === cid) ?? null;
+
+        reportStream(bad ? 'stream-bad' : 'stream-good', {
+            v: 1,
+            at: new Date().toISOString(),
+            role,
+            slot: slotName,
+            reporter: state.raw.me?.username ?? null,
+            subject: self ? (state.raw.me?.username ?? null) : (peer?.displayName || peer?.username || cid),
+            channel: state.raw.currentChannelId ?? null,
+            // The field names predate the share chooser and the server stores reports as
+            // they come, so they stay; what they carry is now the running share's choice.
+            preset: activeShare.choice.quality,
+            prefer: activeShare.choice.content,
+            verdict: verdict.verdict,
+            reasons: verdict.reasons,
+            samples,
+        })
+            .then((ok) => flashReport(holder, clicked, Boolean(ok)))
+            .catch(() => flashReport(holder, clicked, false));
+    }
+
+    /** Momentary feedback on the buttons: a click that vanishes without a trace reads as broken. */
+    function flashReport(holder, clicked, ok) {
+        const buttons = [...holder.querySelectorAll('[data-report-good], [data-report-bad]')];
+        buttons.forEach((b) => { b.disabled = true; });
+        const span = clicked.querySelector('span');
+        const original = span?.textContent ?? null;
+        if (span) span.textContent = ok ? 'Sent' : 'Failed';
+        setTimeout(() => {
+            buttons.forEach((b) => { b.disabled = false; });
+            if (span && original !== null) span.textContent = original;
+        }, 1800);
+    }
+
+    let prefs = readPrefs(server.id);
+    // The settings of the share that is running, or of the next one until a choice is made.
+    // Replaced only when the share chooser commits; see openShareSetup.
+    let activeShare = screenShareSettings({ quality: prefs.shareQuality, content: prefs.shareContent });
+    let pttHeld = false;
+    // What the operating system last said about the push-to-mute shortcut, { ok, error } or
+    // null before anything was asked; and whether settings has it let go while a new one is
+    // chosen. See syncPushToMute.
+    let pushToMuteStatus = null;
+    let pushToMutePaused = false;
+    let unwirePushToMute = () => {};
+    // Text channels are openable-from-anywhere only when the server broadcasts chat
+    // that way; against an older server every click is still a move.
+    const canBrowse = features.includes('chat.browse');
+    const canDm = features.includes('module.dm');
+    const canReact = features.includes('chat.reactions');
+    const canPreview = features.includes('chat.link-previews');
+    const canCall = features.includes('dm.calls');
+    // Slash commands, as the server lists them. Empty until GET /api/commands answers,
+    // and for ever on a server without the module — so every slash stays plain text.
+    const canCommand = features.includes('module.slash-commands');
+    let slashCommands = [];
+    // The command just sent, until its result or its refusal comes back. An error frame
+    // does not say which request it answers, so a refusal is recognised by its code and
+    // by arriving while this is set.
+    let pendingCommand = null;
+    // Both are administrator verbs, and both are gated TWICE: on being an administrator,
+    // and on the server actually having the handler. An older server has neither message
+    // type, so offering them would mean a menu item whose only effect is an error frame.
+    // A picture and a status. Against an older server the menu still opens — it is where
+    // Settings lives now — but the status rows are not offered, because pressing one
+    // would only produce a 404.
+    const canSetStatus = features.includes('profile');
+    // Avatars are behind the session, so they cannot be an <img src> straight to the API.
+    // The cache fetches each one once and repaints when it lands — until then the initials
+    // stand in, which is why nothing here has a loading state.
+    const avatarCache = createAvatarCache({
+        api,
+        onResolved: () => {
+            paint();
+            // The settings dialog is its own DOM and does not repaint with the room.
+            settings?.refreshProfile?.();
+        },
+    });
+    // Bubbles. The photos are behind the session like avatars are, so they come through the
+    // same kind of cache — shared with settings, where the admin screen shows them too.
+    const canBubble = features.includes('bubbles');
+    let bubbleRoom = null;
+    const bubblePhotos = createAvatarCache({
+        api,
+        pathFor: (id) => `/api/bubbles/${encodeURIComponent(id)}/photo`,
+        onResolved: () => {
+            bubbleRoom?.photosArrived();
+            settings?.refreshBubbles?.();
+        },
+    });
+    const canMovePeople = Boolean(user?.isAdmin) && features.includes('peers.admin-move');
+    const canModeratePeople = Boolean(user?.isAdmin) && features.includes('moderation');
+    // The call the user is part of, and where to stand again when it ends.
+    // Right-clicking somebody, and dragging them into a room. Built after the shell is
+    // mounted, because both of its surfaces are appended to it.
+    let peerActions = null;
+    let activeCallThreadId = null;
+    let preCallChannelId = null;
+    let ringModal = null;
+
+    // key `${cid}:${slot}` -> MediaStream. 'self' is our own preview.
+    const videoStreams = new Map();
+    // Your OWN tiles you have opted to put in the big area. Empty by default: there is no reason
+    // to be subscribed to your own share, so a self screen shows as a placeholder with a Watch
+    // button until you choose to look. (Your own camera stays a live mirror in the compact row —
+    // that one people expect — and joins the big area the same way, when asked.)
+    const watchingSelf = new Set();
+    // The source most recently chosen in the share picker, so the isolated-audio capture knows
+    // which window/screen to follow. Recorded at pick time because the pick happens INSIDE the
+    // getDisplayMedia call that voice.enableScreen makes, and voice reads it straight after.
+    let lastShareSource = null;
+    // Several streams can be watched at once; they share the big area side by side. The
+    // spotlight is the one the person chose to make big, with the others in the strip — or
+    // null for the side-by-side grid. A remote tile is watched exactly when its stream is in
+    // videoStreams: watching is opt-in, so every remote stream that arrives was asked for.
+    let spotlight = null;
+    // The user's own stream/chat split, in pixels, once they have dragged the divider.
+    // Null means the CSS default share.
+    let stageHeightPx = null;
+    // What the stage last rendered. Repainting writes innerHTML, which throws away every
+    // tile and builds new ones -- so an identical repaint is not free: it re-creates each
+    // <video> and re-attaches srcObject. The pong carries the room's producer truth every
+    // 25 s whether or not anything changed, so without this guard the stage rebuilt itself
+    // on a timer, forever.
+    let lastStageSignature = null;
+    // Set when a repaint was withheld because it would have dropped the viewer out of
+    // fullscreen; flushed the moment they leave it.
+    let stagePaintDeferred = false;
+    // While a fullscreen tile's stream is missing, until this moment passes. A dropped
+    // consumer that is about to be re-made is indistinguishable from a share that ended —
+    // see stage-paint.js — so the difference is decided by waiting a beat.
+    let fullscreenHoldUntil = 0;
+    let fullscreenHoldTimer = 0;
+    // Which stream announcements are worth a chime, and the app's own sounds themselves.
+    const streamCues = createStreamCues();
+    const bundledCueAudio = {};
+
+    const voice = createVoice({
+        link,
+        // Voice's own account of what it did — a stale consumer replaced, a rebuild and why,
+        // the ICE path each transport settled on — written where a bug report finds it.
+        log: (level, message) => platform.log(level, `[voice] ${message}`),
+        // Which speakers/headset the room's voices play out of; '' is the system default.
+        getAudioOutput: () => prefs.audioOutput,
+        // Render-side truth for a watched video, read off the stage's own <video> element:
+        // whether it is fullscreen, how far it is being upscaled, and how many frames the
+        // display is failing to paint. None of this is in getStats, and it is the half that
+        // explains "fine until fullscreen". Null when the element is not on the stage.
+        getRenderStats(cid, slot) {
+            const holder = mount.querySelector(`[data-tile="${cid}:${slot}"]`);
+            const video = holder?.querySelector('video');
+            if (!video) return null;
+            const q = video.getVideoPlaybackQuality?.();
+            const rect = video.getBoundingClientRect();
+            return {
+                at: Date.now(),
+                fullscreen: document.fullscreenElement === holder,
+                displayWidth: rect.width,
+                displayHeight: rect.height,
+                videoWidth: video.videoWidth,
+                videoHeight: video.videoHeight,
+                totalVideoFrames: q?.totalVideoFrames ?? null,
+                droppedVideoFrames: q?.droppedVideoFrames ?? null,
+            };
+        },
+        // Only when the user asked to share audio, and only for the source they picked: capture
+        // that program's audio in isolation so Weave's own call is not in it. Returns null on
+        // any failure, and voice falls back to the loopback track.
+        getIsolatedShareAudio: () => (lastShareSource?.audio && lastShareSource?.id
+            ? captureProcessAudio(lastShareSource.id)
+            : Promise.resolve(null)),
+        onVideo({ cid, slot, stream }) {
+            const key = tileKey(cid, slot);
+            // Our own tile appearing or vanishing is also the sidebar icon's truth.
+            if (cid === 'self' && link.cid) state.markOwnProducer(link.cid, slot, Boolean(stream));
+            if (!stream) {
+                videoStreams.delete(key);
+                // A share that ended forgets you were viewing it, so the next one starts as a
+                // placeholder rather than snapping straight to a live self-view.
+                watchingSelf.delete(key);
+                // Somebody watching this one in fullscreen gets a moment's grace before it is
+                // treated as over: a re-consume lands on the existing <video> through
+                // attachStreams and they never notice, where ejecting them would be the whole
+                // picture vanishing for a hiccup.
+                const held = holdFullscreen(key);
+                if (!held && spotlight === key) spotlight = null;
+            } else {
+                // Watching is opt-in, so every remote stream that arrives here was ASKED for,
+                // and arriving is what puts it in the big area beside the others.
+                videoStreams.set(key, stream);
+            }
+            paintStage();
+        },
+        // See audio-options.js for why it is these three flags and nothing else.
+        getAudioConstraints: () => micConstraints(prefs),
+        getChainSettings: () => ({
+            micGain: Number(prefs.micGain ?? 100),
+            noiseGate: Boolean(prefs.noiseGate),
+            gateSensitivity: Number(prefs.gateSensitivity ?? 64),
+            voiceOptimize: Boolean(prefs.voiceOptimize),
+        }),
+        onMicTelemetry(data) {
+            try { window.dispatchEvent(new CustomEvent('weave:mic-level', { detail: data })); } catch { /* no DOM */ }
+        },
+        getVideoConstraints: () => cameraConstraints({
+            device: prefs.camDevice ?? null,
+            res: prefs.camRes ?? '720',
+            fps: Number(prefs.camFps ?? 30),
+        }),
+        getVideoEncodings: () => cameraEncodings({ res: prefs.camRes ?? '720' }),
+        // Whether the cheap repair is available at all. A server without it gets the old
+        // behaviour — straight to rebuilding the transport — rather than a failed round
+        // trip on every hiccup.
+        canRestartIce: () => features.includes('media.ice-restart'),
+        // What the chooser settled on for THIS share — not re-derived from preferences on
+        // every call, which is what these used to do. voice.js reads them again when a share
+        // is re-produced after a reconnect, and that must be the share that was started.
+        getScreenConstraints: () => activeShare.constraints,
+        getScreenContentHint: () => activeShare.contentHint,
+        getScreenEncodings: () => activeShare.encodings,
+        onChange: (status) => {
+            voiceState = status;
+            paint();
+        },
+        onLevels: (levels) => {
+            voiceLevels = levels;
+            paintSpeaking();
+        },
+    });
+    let voiceState = { state: 'idle' };
+
+    const canPrivate = features.includes('channels.private');
+    const browser = createRoomBrowser({
+        state,
+        canCreate: Boolean(user?.isAdmin) || canPrivate,
+        isAdmin: Boolean(user?.isAdmin),
+        canPrivate,
+        createModal,
+        dom: { $, $$ },
+        onEnter(channelId) {
+            const target = state.raw.channels.find((c) => c.id === channelId);
+            if (canBrowse && target?.kind === 'text') {
+                openTextChannel(channelId);
+                return;
+            }
+            if (channelId === state.raw.currentChannelId) return;
+            link.noteChannel(channelId);
+            link.send('move', { channelId });
+        },
+        async onCreate({ name, kind, private: isPrivate = false }) {
+            const { channel } = await api.request('POST', '/api/channels', {
+                body: { name, kind, ...(isPrivate ? { private: true } : {}) },
+            });
+            // The server broadcasts the fresh list to everyone, us included; nothing to
+            // merge locally. Older servers do not broadcast, so fetch once to be sure.
+            api.request('GET', '/api/channels')
+                .then(({ channels }) => state.setChannels(channels))
+                .catch(() => {});
+            return channel;
+        },
+    });
+
+    const settings = createSettings({
+        api,
+        server,
+        me: user,
+        features,
+        onPrefsChange: applyPrefs,
+        onSignOut: signOut,
+        getActiveMicrophone: () => voice.activeMicrophone(),
+        // Read on each use, never captured: a reconnection that cannot be resumed gives
+        // this connection a new name, and settings needs the one that is true right now.
+        selfCid: () => link.cid,
+        checkForUpdates: () => platform.updates.check?.(),
+        // A picture is a fact about the roster, not about the settings dialog. The server
+        // broadcasts it to everybody else; this is what makes it appear HERE without
+        // waiting for our own frame to come back to us.
+        avatars: avatarCache,
+        onProfileChange: (next) => {
+            if (next?.avatar) avatarCache.forget(next.avatar);
+            state.setMyAvatar(next?.avatar ?? null);
+            if (next?.displayName) state.setMyDisplayName(next.displayName);
+            paint();
+        },
+        pushToMuteStatus: () => pushToMuteStatus,
+        pausePushToMute: () => {
+            pushToMutePaused = true;
+            syncPushToMute();
+            return () => { pushToMutePaused = false; return syncPushToMute(); };
+        },
+        openWhatsNew,
+        liftServerMute: (userId) => link.send('serverMute', { userId, muted: false }),
+        bubblePhotos,
+    });
+
+    /**
+     * Make a changed preference take effect now, rather than on the next launch.
+     *
+     * A settings screen whose switches only apply after a restart teaches people that the
+     * switches do not work.
+     */
+    function applyPrefs(next, changedKey) {
+        const wasPushToTalk = prefs.pushToTalk;
+        const wasMicDevice = prefs.micDevice;
+        const wasShortcut = [prefs.pushToMute, prefs.pushToMuteKey, prefs.pushToTalk].join('|');
+        prefs = next;
+        // A device change cannot ride applyConstraints — it needs a fresh capture,
+        // swapped into the live producer.
+        if (changedKey === 'micDevice' || (next.micDevice ?? null) !== (wasMicDevice ?? null)) {
+            voice.switchMicrophone().catch(() => { /* the old device keeps working */ });
+        } else {
+            voice.applyAudioConstraints().catch(() => {});
+        }
+        // The output device applies live too, with no capture to rebuild — just a resink of
+        // the context and the playing elements.
+        if (changedKey === 'audioOutput') voice.setAudioOutput(prefs.audioOutput ?? '');
+        voice.applyChainSettings();
+
+        // Flipping push-to-talk changes who owns the microphone, in both directions.
+        // ON closes the gate immediately — leaving the mic open until the first press
+        // means the setting appears to do nothing, and everything said in between is
+        // broadcast by someone who believes it is not. OFF returns to an OPEN mic:
+        // the person just asked for an open microphone, so making them hunt for the
+        // unmute button after every settings visit would teach them the setting is broken.
+        if (prefs.pushToTalk !== wasPushToTalk) {
+            const deafened = Boolean(state.toShell().me.deafened);
+            const next = onPushToTalkChange({ turnedOn: prefs.pushToTalk, deafened });
+            pttHeld = next.held;
+            voice.setMuted(next.muted);
+            link.send('setMute', { muted: next.muted, deafened });
+            paint();   // the mute button greys out (or comes back) right now
+        }
+        loom?.setMode(prefs.loomMode);
+        applyMotionPrefs();
+
+        // Returned, so settings can wait for the operating system's answer before it says
+        // whether the shortcut is set. Push-to-talk is in the list because it switches the
+        // shortcut off: see syncPushToMute.
+        const isShortcut = [prefs.pushToMute, prefs.pushToMuteKey, prefs.pushToTalk].join('|');
+        if (isShortcut !== wasShortcut) return syncPushToMute();
+        return undefined;
+    }
+
+    /**
+     * Sign out properly.
+     *
+     * The order matters and every step earns its place. The server is told first so the
+     * session is revoked rather than left live for the rest of its twelve hours — the app
+     * previously never called logout at all, so quitting left a usable session behind. The
+     * local token goes next, then the socket and the microphone, so the room sees a clean
+     * departure rather than a timeout.
+     *
+     * Saved sign-in details are deliberately NOT cleared: "sign out" and "forget me" are
+     * different requests, and someone signing out on a shared machine unticks Remember me
+     * to be forgotten. Servers and per-server preferences stay too.
+     */
+    /** The server ended us — do the local half of signing out and surface why. */
+    let walkingOut = false;
+    async function signedOutBy(failure) {
+        if (walkingOut) return;
+        walkingOut = true;
+        clearInterval(syncTimer);
+        clearInterval(statsTimer);
+        clearInterval(streamDiagTimer);
+        api.setToken(null);
+        await platform.tokens.clear(server.id).catch(() => {});
+        // A wiped or revoked account's saved password is dead weight that would re-fill
+        // a login that can never succeed again.
+        if (failure?.code !== 'password_reset') {
+            await platform.credentials.clear(server.id).catch(() => {});
+        }
+        voice.stop();
+        link.close();
+        onSignedOut?.({ notice: failure?.message ?? 'You were signed out by the server.' });
+    }
+
+    async function signOut() {
+        clearInterval(syncTimer);
+        clearInterval(statsTimer);
+        clearInterval(streamDiagTimer);
+        await api.logout().catch(() => {
+            // A network failure must not trap somebody in a signed-in interface. The
+            // session lapses on its own; the important part is that this client forgets it.
+        });
+        api.setToken(null);
+        await platform.tokens.clear(server.id).catch(() => {});
+        voice.stop();
+        link.close();
+        onSignedOut?.();
+    }
+
+    /* ── painting ────────────────────────────────────────────────────────── */
+
+    /**
+     * Repaint the regions that data changes.
+     *
+     * Coalesced, because a roster snapshot arrives as one message but a burst of joins
+     * arrives as several, and painting per event would lay out the same list five times.
+     *
+     * An animation frame is the right moment to paint — but it is not a promise. A window
+     * that is minimised, occluded, or otherwise not compositing does not run rAF at all, and
+     * a callback that never fires would leave `painting` stuck true, so nothing would ever
+     * schedule again and the UI would stay frozen even after the window came back. The
+     * timeout is the floor: whichever arrives first wins, and the other is cancelled.
+     */
+    function paint() {
+        if (painting) return;
+        painting = true;
+
+        let frame = 0;
+        let timer = 0;
+        const run = () => {
+            cancelAnimationFrame(frame);
+            clearTimeout(timer);
+            painting = false;
+            repaint();
+        };
+        frame = requestAnimationFrame(run);
+        timer = setTimeout(run, PAINT_FLOOR_MS);
+    }
+
+    function repaint() {
+        const view = state.toShell();
+        // Faces folded in before anything renders. The views are pure functions of state
+        // and must never reach for the network, so a URL only ever reaches them resolved.
+        view.people = withPriority(withAvatars(view.people, avatarCache));
+        view.me = { ...view.me, avatarUrl: avatarCache.urlFor(view.me.avatar) };
+        for (const room of view.rooms) {
+            if (room.occupants?.length) room.occupants = withPriority(withAvatars(room.occupants, avatarCache));
+        }
+        // The roster just changed in some way, so the voices to duck for may have too:
+        // somebody starred arrived, left, or came back on a new connection.
+        syncPriority();
+        // And the faces beside messages, which were initials only for as long as the
+        // timeline existed: the roster had its pictures resolved and the authors never did.
+        // A continued row shows no face, so it costs no fetch.
+        view.items = view.items.map((item) => (item.kind === 'message' && !item.continued && item.author?.avatar
+            ? { ...item, author: { ...item.author, avatarUrl: avatarCache.urlFor(item.author.avatar) } }
+            : item));
+
+        // A drag holds the row it started on. Rewriting #roomScroll's innerHTML mid-gesture
+        // destroys that row, and the drop lands on nothing — which is exactly what a
+        // presence change arriving one second into a drag would otherwise cause.
+        if (!peerActions?.dragging) {
+            setHtml('#roomScroll', roomGroups(view.rooms, view.me));
+            // The row the open menu points at was among the ones just replaced.
+            peerActions?.reselect();
+            // So was the loom's canvas, if the room being stood in has one.
+            mountLoom();
+        }
+        setHtml('#selfBarSlot', selfBar({ ...view.me, pttOn: Boolean(prefs.pushToTalk), pttHeld }));
+        const railEl = $('.rail', mount);
+        if (railEl) railEl.outerHTML = rail({ dms: view.dms, inRoom: !view.dmOpen });
+        setHtml('.typing', typingLine(view.typing));
+        setHtml('#voiceNotice', voiceNoticeMarkup({
+            ...voiceState,
+            // Carried on the status rather than held as its own banner: there is one place
+            // the room says something true about your microphone, and two would compete.
+            forceMuted: Boolean(view.me.forceMuted),
+            forceMutedUntil: view.me.forceMutedUntil,
+        }));
+        paintConnection({ ...view.connection, ...mediaStats });
+        paintRoomHead(view.room);
+        paintMediaButtons();
+        paintMessages(view.items);
+
+        // A repaint replaced those rows, so anything currently talking needs its ring back
+        // immediately rather than at the next level sample.
+        paintSpeaking();
+    }
+
+    /* ── priority speaker ────────────────────────────────────────────────── */
+
+    // Stored by ACCOUNT id, so a starred person stays starred across their reconnects and
+    // machines; voice works in connections, so the room translates on every paint.
+    const starred = () => new Set(prefs.prioritySpeakers ?? []);
+
+    /** The roster marks a starred person, which is what lights the star beside them. */
+    const withPriority = (people = []) => {
+        const ids = starred();
+        return ids.size ? people.map((p) => (ids.has(p.id) ? { ...p, priority: true } : p)) : people;
+    };
+
+    function syncPriority() {
+        const ids = starred();
+        voice.setPriority([...state.raw.peers.values()]
+            .filter((p) => ids.has(p.userId) && p.userId !== state.raw.me?.id)
+            .map((p) => p.cid));
+    }
+
+    function togglePriority(person) {
+        const ids = starred();
+        if (ids.has(person.id)) ids.delete(person.id); else ids.add(person.id);
+        const next = [...ids];
+        settingsFor(server.id).set('prioritySpeakers', next);
+        prefs = { ...prefs, prioritySpeakers: next };
+        syncPriority();
+        paint();
+    }
+
+    /**
+     * Show who is talking.
+     *
+     * Deliberately NOT part of paint(). Levels arrive ten times a second, and re-rendering
+     * the sidebar and member list at that rate to add one class would be both wasteful and
+     * visibly janky — it would also destroy any hover or focus in those lists on every
+     * frame. This toggles a class on elements that already exist and touches nothing else.
+     */
+    function paintSpeaking() {
+        const view = state.toShell();
+        const now = Date.now();
+
+        for (const person of view.people) {
+            // The loudest of ALL their connections. Levels are per peer, and somebody
+            // signed in twice would otherwise be silent on screen while audibly talking.
+            let level = person.id === view.me.id ? (voiceLevels.get('self') ?? 0) : 0;
+            for (const cid of person.cids ?? []) {
+                level = Math.max(level, voiceLevels.get(cid) ?? 0);
+            }
+            if (level >= SPEAKING_AT) speakingUntil.set(person.username, now + SPEAKING_HOLD_MS);
+        }
+
+        for (const el of mount.querySelectorAll('[data-person]')) {
+            const until = speakingUntil.get(el.dataset.person) ?? 0;
+            el.classList.toggle('speaking', until > now);
+        }
+    }
+
+    const setHtml = (selector, markup) => {
+        const el = $(selector, mount);
+        if (el) el.innerHTML = markup;
+    };
+
+    function paintConnection(conn) {
+        const pill = $('.conn-pill', mount);
+        if (pill) pill.outerHTML = connectionPill(conn);
+    }
+
+    function paintRoomHead(room) {
+        const title = $('#roomHead h1', mount);
+        if (title) title.textContent = room.name ?? 'Room';
+        const icon = $('#roomIcon', mount);
+        if (icon) icon.innerHTML = roomGlyph(room);
+        const topic = $('#roomTopic', mount);
+        if (topic) {
+            topic.textContent = room.topic ?? '';
+            topic.hidden = !room.topic;
+        }
+        const addBtn = $('#addMemberBtn', mount);
+        // Private huddles only. A DM is a strict pair — the server has no operation that
+        // could grow one — so the button never shows there, whatever else is true.
+        if (addBtn) addBtn.hidden = !(room.private && room.member && room.kind !== 'dm');
+        const callBtn = $('#dmCallBtn', mount);
+        const hangupBtn = $('#dmHangupBtn', mount);
+        const inThisCall = room.kind === 'dm' && activeCallThreadId === room.id;
+        if (callBtn) callBtn.hidden = !(canCall && room.kind === 'dm' && !inThisCall);
+        if (hangupBtn) hangupBtn.hidden = !inThisCall;
+        const composer = $('#composerInput', mount);
+        if (composer) composer.placeholder = `Message ${room.name ?? 'the room'}…`;
+        paintBubblesButton();
+    }
+
+    /** The way into every bubble — there once any exist, and marked when one has news. */
+    function paintBubblesButton() {
+        const button = $('#allBubblesBtn', mount);
+        if (!button) return;
+        button.hidden = !bubbleRoom?.count;
+        button.classList.toggle('has-unread', Boolean(bubbleRoom?.unread));
+    }
+
+    /**
+     * Paint the stage — and ONLY when video actually changed.
+     *
+     * Deliberately not part of repaint(): rebuilding <video> elements on every chat
+     * message or presence blink would visibly restart the pictures. The stage answers to
+     * onVideo, watch and spotlight clicks and room moves, nothing else.
+     */
+    function paintStage() {
+        const slot = $('#stageSlot', mount);
+        if (!slot) return;
+
+        const me = state.raw.me;
+        const tiles = [];
+
+        // Your own streams. A camera is a live mirror; a SCREEN is opt-in — a placeholder with a
+        // Watch button until you choose to view it, because you are not subscribed to your own
+        // share by default.
+        for (const [key, stream] of videoStreams) {
+            const [cid, slotName] = key.split(':');
+            if (cid !== 'self') continue;
+            const watched = watchingSelf.has(key);
+            // A camera is live either way — the mirror — but only WATCHED takes the big area.
+            const live = slotName !== 'screen' || watched;
+            tiles.push({
+                key, cid, slot: slotName, label: 'You', self: true,
+                live, watched, stream: live ? stream : null,
+                chipName: me?.username ?? 'You',
+            });
+        }
+
+        // Everyone else's come from the ROSTER's producer list, watched or not: an
+        // unwatched stream is a placeholder tile — present, silent, costing nothing —
+        // and clicking Watch is what starts the packets.
+        for (const peer of state.raw.peers.values()) {
+            if (peer.channelId !== state.raw.currentChannelId) continue;
+            if (peer.userId === me?.id) continue;
+            for (const producer of peer.producers ?? []) {
+                if (producer.slot !== 'screen' && producer.slot !== 'webcam') continue;
+                const key = tileKey(peer.cid, producer.slot);
+                const stream = videoStreams.get(key) ?? null;
+                const audioSlot = producer.slot === 'screen' ? 'screen-audio' : 'audio';
+                const hasAudio = (peer.producers ?? []).some((pr) => pr.slot === audioSlot);
+                tiles.push({
+                    key,
+                    cid: peer.cid,
+                    slot: producer.slot,
+                    label: peer.displayName || peer.username || 'Someone',
+                    chipName: peer.username,
+                    self: false,
+                    live: Boolean(stream),
+                    watched: Boolean(stream),
+                    stream,
+                    frame: stream ? null : lastFrames.get(key) ?? null,
+                    audio: stream && hasAudio
+                        ? { ...voice.getListen(peer.cid, audioSlot), slot: audioSlot } : null,
+                });
+            }
+        }
+
+        // The tile holder is what was handed to requestFullscreen, so it carries the key.
+        const fullscreenKey = document.fullscreenElement?.dataset?.tile ?? null;
+        const hold = Boolean(fullscreenKey) && Date.now() < fullscreenHoldUntil;
+
+        // The spotlight may only rest on a watched tile; a placeholder in it would be a black
+        // box. Except while the fullscreen tile is being held: dropping the spotlight there
+        // would survive the hold and put the viewer back in the grid anyway.
+        if (spotlight && !tiles.some((t) => t.key === spotlight && t.watched)
+            && !(hold && spotlight === fullscreenKey)) spotlight = null;
+        // A dragged height belongs to the SPLIT; the compact indication row sizes itself.
+        if (!tiles.some((t) => t.watched)) stageHeightPx = null;
+        const watchLimitReached = remoteWatchCount() >= MAX_WATCHED;
+
+        const signature = stageSignature({ tiles, spotlight, heightPx: stageHeightPx, watchLimitReached });
+        const decision = stagePaintDecision({
+            signature,
+            lastSignature: lastStageSignature,
+            hasChildren: slot.childElementCount > 0,
+            fullscreenKey,
+            hold,
+            tiles,
+        });
+        if (decision !== 'paint') {
+            // A deferred paint is owed one; a skipped paint is not, because nothing changed.
+            if (decision === 'defer') stagePaintDeferred = true;
+            // Still reconcile the streams. The signature deliberately ignores MediaStream
+            // identity, so a stream REPLACED on a tile that is already live (a heal, a
+            // re-consume) does not move it — and without this the tile would keep playing a
+            // dead object until something unrelated forced a repaint.
+            attachStreams(slot);
+            paintMediaButtons();
+            return;
+        }
+
+        lastStageSignature = signature;
+        slot.innerHTML = stageView({
+            tiles, spotlight, heightPx: stageHeightPx, watchLimitReached, canReport: Boolean(user?.isTester),
+        });
+        attachStreams(slot);
+        paintMediaButtons();
+    }
+
+    // Streams attach after paint; a view that touched srcObject would not be a view.
+    // Idempotent, so it is safe to run on a stage that was not redrawn.
+    function attachStreams(slot) {
+        for (const el of slot.querySelectorAll('[data-tile]')) {
+            const stream = videoStreams.get(el.dataset.tile);
+            const video = el.querySelector('video');
+            if (video && stream && video.srcObject !== stream) {
+                video.srcObject = stream;
+                video.play().catch(() => { /* autoplay policies; the click that follows fixes it */ });
+            }
+        }
+    }
+
+    /**
+     * A fullscreen tile has just lost its stream. Wait, rather than ejecting.
+     *
+     * Returns whether this key is the one in fullscreen — the caller leaves the focus alone
+     * when it is. The timer is what ends the grace: if nothing re-consumed by then, the paint
+     * that was withheld happens and the viewer leaves fullscreen on the honest grounds that
+     * the share is over.
+     */
+    function holdFullscreen(key) {
+        if (!key || document.fullscreenElement?.dataset?.tile !== key) return false;
+        fullscreenHoldUntil = Date.now() + FULLSCREEN_HOLD_MS;
+        clearTimeout(fullscreenHoldTimer);
+        fullscreenHoldTimer = setTimeout(() => {
+            fullscreenHoldUntil = 0;
+            paintStage();
+        }, FULLSCREEN_HOLD_MS);
+        return true;
+    }
+
+    function clearFullscreenHold() {
+        fullscreenHoldUntil = 0;
+        clearTimeout(fullscreenHoldTimer);
+        fullscreenHoldTimer = 0;
+    }
+
+    /**
+     * Entering and leaving fullscreen.
+     *
+     * Two jobs. Anything the stage wanted to draw while the viewer was in fullscreen was
+     * withheld so it would not eject them; draw it now that leaving is their own doing.
+     *
+     * And the animations stop for the duration. Nothing else pauses them: `document.hidden`
+     * stays false while an element is fullscreen — the Page Visibility spec is about the
+     * document, not about what is covering it — so the visibilitychange handler inside each
+     * renderer never fires. Meanwhile the window has resized to the monitor, which takes the
+     * room background's canvas with it: a backing store up to the full screen at 2x, cleared
+     * and redrawn sixty times a second with a shadow-blurred stroke per person online. That
+     * is affordable beside a 172px thumbnail and not beside a 1440p video, and it is what
+     * made the picture stutter and the window stop answering. They are decoration, and they
+     * are behind an opaque video at that moment regardless.
+     */
+    function onFullscreenChange() {
+        applyMotionPrefs();
+        if (document.fullscreenElement) return;
+        clearFullscreenHold();
+        if (!stagePaintDeferred) return;
+        stagePaintDeferred = false;
+        paintStage();
+    }
+    document.addEventListener('fullscreenchange', onFullscreenChange);
+
+    // The last thing a stream showed, kept as a small JPEG per tile key. When someone
+    // stops watching, the placeholder wears this frame BLURRED — "there is a picture
+    // here, you are just not receiving it" — instead of falling back to stripes.
+    const lastFrames = new Map();
+
+    function snapshotTile(key) {
+        const video = $(`[data-tile="${key}"] video`, mount);
+        if (!video || !video.videoWidth) return;
+        try {
+            const canvas = document.createElement('canvas');
+            const scale = Math.min(1, 320 / video.videoWidth);
+            canvas.width = Math.round(video.videoWidth * scale);
+            canvas.height = Math.round(video.videoHeight * scale);
+            canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+            lastFrames.set(key, canvas.toDataURL('image/jpeg', 0.6));
+        } catch { /* a tainted or dead frame just means the plain placeholder */ }
+    }
+
+    /** Other people's streams asked for, arrived or still on their way. */
+    function remoteWatchCount() {
+        return voice.watchedKeys().filter((key) => !key.startsWith('self:')).length;
+    }
+
+    /**
+     * Add one stream to the big area, beside whatever is already there. Nothing else stops:
+     * watching is plural. A remote stream's picture lands through onVideo, which is what
+     * moves it into the big area; your own is local and lands at once.
+     */
+    function watchTile(key) {
+        if (!key) return;
+        if (key.startsWith('self:')) {
+            watchingSelf.add(key);
+            paintStage();
+            return;
+        }
+        const [cid, slot] = key.split(':');
+        if (videoStreams.has(key) || voice.watchedKeys().includes(key)) return;
+        // Past the limit the Watch buttons are drawn disabled; this is for the paths that
+        // are not a button — a sidebar mark, a keyboard activation on the tile itself.
+        if (remoteWatchCount() >= MAX_WATCHED) return;
+        // The account rides along so the choice can be re-aimed after a reconnection,
+        // when every cid in the room is a different string.
+        voice.setWatching(cid, slot, true, state.raw.peers.get(cid)?.userId ?? null);
+        paintStage();
+    }
+
+    /**
+     * Stop watching one stream, and only that one. Stopping means stopping: the
+     * subscription ends server-side and the tile becomes a BLURRED still of the last frame
+     * received. Your own returns to a placeholder — unsubscribed again.
+     */
+    function stopWatchingTile(key) {
+        if (!key) return;
+        const holder = $(`[data-tile="${key}"]`, mount);
+        if (holder && document.fullscreenElement === holder) document.exitFullscreen().catch(() => {});
+        if (spotlight === key) spotlight = null;
+        if (key.startsWith('self:')) {
+            watchingSelf.delete(key);
+        } else {
+            snapshotTile(key);
+            const [cid, slot] = key.split(':');
+            voice.setWatching(cid, slot, false);
+        }
+        paintStage();
+    }
+
+    /** Make one watched stream THE picture, or (null) go back to them side by side. */
+    function setSpotlight(key) {
+        if (spotlight === key) return;
+        spotlight = key;
+        paintStage();
+    }
+
+    /* ── sharing a screen ────────────────────────────────────────────────── */
+
+    /**
+     * Ask how to share, then share.
+     *
+     * Every time, before the screen picker: quality and whether it is video or text. A game
+     * and a spreadsheet are different streams, and the settings that used to decide this sat
+     * in a dialog nobody reopened between the two. The chooser opens on the last choice, so
+     * sharing the same kind of thing again is one click more than it was, not a decision.
+     *
+     * A modal rather than a menu by the button, because the self bar — and the share button
+     * with it — is rewritten on every paint, which a presence change triggers at any moment.
+     * The top layer is the one place nothing in the room can repaint over.
+     *
+     * Nothing reaches voice.js until "Choose screen". Cancelling here must leave no trace:
+     * enableScreen() records that a share is WANTED before it ever reaches the picker.
+     */
+    function openShareSetup() {
+        const modal = createModal({ className: 'share-setup-modal', label: 'Share your screen' });
+        modal.open({
+            content: shareSetupView({ quality: prefs.shareQuality, content: prefs.shareContent }),
+        });
+
+        const form = modal.element.querySelector('[data-share-setup]');
+        form?.addEventListener('submit', (event) => {
+            event.preventDefault();
+            const data = new FormData(form);
+            const choice = normaliseShareChoice({ quality: data.get('quality'), content: data.get('content') });
+
+            // Remembered before the share starts, not after it succeeds: cancelling the
+            // screen picker is a different decision from the one made here, and the next
+            // chooser should still open on what was picked.
+            const store = settingsFor(server.id);
+            store.set('shareQuality', choice.quality);
+            store.set('shareContent', choice.content);
+            prefs = { ...prefs, shareQuality: choice.quality, shareContent: choice.content };
+
+            // Held for the life of the share: the re-produce after a reconnect and the frame
+            // rate watcher both read it again, and must get what the share started with.
+            activeShare = screenShareSettings(choice);
+            modal.close();
+
+            // Straight from the click, with nothing slow awaited first — getDisplayMedia is
+            // allowed to open the picker on the strength of this gesture.
+            runShare(voice.enableScreen());
+        });
+        modal.element.addEventListener('click', (event) => {
+            if (event.target.closest('[data-share-cancel]')) modal.close();
+        });
+    }
+
+    /** Start or stop a share, and say something only when it genuinely failed. */
+    function runShare(promise) {
+        promise
+            .catch((err) => {
+                // Cancelling the picker is a decision, not a failure. The two names are the
+                // two pickers: a browser's own declines with NotAllowedError, while our
+                // desktop picker declines by handing Electron no source, which surfaces here
+                // as AbortError.
+                if (err?.name === 'NotAllowedError' || err?.name === 'AbortError') return;
+                voiceState = { state: 'no-mic', message: `Screen share failed: ${err.message}` };
+                paint();
+            })
+            .finally(() => paintMediaButtons());
+    }
+
+    /** The header's camera and screen buttons: shown where sending is possible, lit while on. */
+    function paintMediaButtons() {
+        const standing = state.raw.channels.find((c) => c.id === state.raw.currentChannelId);
+        // A room the list does not contain is a call room: video belongs there most of all.
+        const canSend = standing
+            ? standing.allowVideo !== false
+            : Boolean(state.raw.currentChannelId);
+        const cam = $('#camBtn', mount);
+        const screen = $('#screenBtn', mount);
+        if (cam) {
+            cam.hidden = !canSend;
+            cam.classList.toggle('on', voice.webcamOn);
+            cam.setAttribute('aria-pressed', String(voice.webcamOn));
+            cam.title = voice.webcamOn ? 'Turn your camera off' : 'Turn your camera on';
+        }
+        if (screen) {
+            // A phone browser has no screen capture, and the button used to be offered there
+            // anyway — a control whose only outcome was an error.
+            screen.hidden = !canSend || !canShareScreen({ mediaDevices: navigator.mediaDevices, platform });
+            screen.classList.toggle('on', voice.screenOn);
+            screen.setAttribute('aria-pressed', String(voice.screenOn));
+            screen.title = voice.screenOn ? 'Stop sharing your screen' : 'Share your screen';
+        }
+    }
+
+    /**
+     * Repaint the messages, keeping the reader where they were.
+     *
+     * Sticking to the bottom only when they were ALREADY at the bottom. Scrolling someone
+     * down because a new message arrived, while they are reading something further up, is
+     * the single most irritating thing a chat client can do.
+     */
+    function paintMessages(items) {
+        const scroller = $('#timeline', mount);
+        const list = $('#msgList', mount);
+        if (!list || !scroller) return;
+
+        const wasAtBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < STICK_PX;
+        // Distance from the BOTTOM is the reader's true position: when an older page lands
+        // on top, restoring this distance keeps the same message under the cursor instead
+        // of teleporting the view to wherever the old scrollTop now points.
+        const fromBottom = scroller.scrollHeight - scroller.scrollTop;
+
+        // Reacting is possible in channels when the server carries the module; DM
+        // messages have no reaction store yet, so the add button stays away there.
+        const inDm = Boolean(state.raw.activeDmId);
+        list.innerHTML = messageList(items.map((i) =>
+            (i.kind === 'message'
+                ? {
+                    ...i,
+                    canReact: canReact && !inDm,
+                    embedPlaying: playingEmbeds.has(i.id),
+                    previewDismissed: dismissedPreviews.has(i.id),
+                }
+                : i)));
+        hydrateAuthImages();
+        if (!inDm) requestPreviews(state.raw.viewChannelId ?? state.raw.currentChannelId);
+
+        // The "this is the start" note lives outside the list. Rebuilt every paint rather
+        // than cached, so it always names the CURRENT room — it once said "the room"
+        // forever because it rendered before the roster arrived.
+        $('.timeline-empty', mount)?.remove();
+        if (!items.length) list.insertAdjacentHTML('afterend', emptyState(state.toShell().room));
+        paintHistoryNote(inDm ? null : (state.raw.viewChannelId ?? state.raw.currentChannelId));
+
+        if (wasAtBottom) scroller.scrollTop = scroller.scrollHeight;
+        else scroller.scrollTop = scroller.scrollHeight - fromBottom;
+    }
+
+    /* ── the living background, and the loom ─────────────────────────────── */
+
+    /** How loud one person is, across every connection they hold. */
+    function levelOf(person, meId) {
+        let level = person.id === meId ? (voiceLevels.get('self') ?? 0) : 0;
+        for (const cid of person.cids ?? []) level = Math.max(level, voiceLevels.get(cid) ?? 0);
+        return level;
+    }
+
+    function startBackground() {
+        const canvas = $('#roomBg', mount);
+        if (!canvas) return;
+        background = new WeaveBackground(canvas, {
+            // `state.people` rather than `toShell()`: this is read on every animation
+            // frame, and toShell() additionally walks the roster once per channel to work
+            // out who is standing where — none of which a field of strands needs.
+            getState: () => {
+                // Everyone ONLINE, not the occupants of whatever room is on screen. The
+                // field answers "who is here", and that must not change because you opened
+                // a text channel to read — which is what it used to do, and since a text
+                // channel has no occupants at all it went blank exactly when somebody was
+                // most likely to be looking at it.
+                const here = state.people.filter((p) => p.presence !== 'offline');
+                const meId = state.raw.me?.id;
+
+                return {
+                    participants: here.map((p) => ({ id: p.username, hue: userHue(p.username) })),
+                    // How much is being said, by voice or in text, whichever is livelier.
+                    noise: Math.max(
+                        voiceNoise(here.map((p) => levelOf(p, meId))),
+                        msgNoise.value(Date.now()),
+                    ),
+                };
+            },
+        });
+        applyMotionPrefs();
+    }
+
+    /**
+     * One string per person in the room you are standing in.
+     *
+     * Read from the DOM rather than from state, deliberately. String *i* has to be the
+     * face at row *i*, and taking the order from the rows that were actually rendered is
+     * the only way the two cannot drift — a repaint queued behind this frame would
+     * otherwise put the strings in tomorrow's order beside today's faces.
+     */
+    function loomVoices() {
+        // Built from the peer map directly, not from the roster. This runs sixty times a
+        // second, and every derived view in this app sorts, dedupes and walks the channel
+        // list to produce things a string does not need.
+        const meId = state.raw.me?.id;
+        const live = new Map();
+        for (const peer of state.raw.peers.values()) {
+            const entry = live.get(peer.username) ?? { id: peer.userId, cids: [], forceMuted: false };
+            entry.cids.push(peer.cid);
+            // The most recent connection decides, exactly as the roster does — picking
+            // arbitrarily between two is what makes somebody flicker.
+            entry.muted = Boolean(peer.muted);
+            entry.forceMuted = entry.forceMuted || Boolean(peer.forceMuted);
+            live.set(peer.username, entry);
+        }
+
+        const readings = [...mount.querySelectorAll('.loom-anchors .room-person')]
+            .map((el) => el.dataset.person)
+            .filter(Boolean)
+            .map((username) => {
+                const person = live.get(username);
+                // A muted string lies flat. Somebody who has muted themselves is not
+                // talking, however much noise reaches their microphone.
+                const level = !person || person.muted || person.forceMuted
+                    ? 0
+                    : levelOf(person, meId);
+                return { id: username, level };
+            });
+
+        return loomTraces.step(readings)
+            .map((v) => ({ ...v, hue: userHue(v.id) }));
+    }
+
+    /** The renderer lights the avatar that belongs to each string. */
+    function loomRing(username, glow) {
+        const avatar = mount.querySelector(
+            `.loom-anchors .room-person[data-person="${CSS.escape(username)}"] .avatar`);
+        if (avatar) avatar.style.boxShadow = glow;
+    }
+
+    /**
+     * Parent the one canvas into wherever the loom currently is.
+     *
+     * Called after every render of the room list. The canvas outlives the markup around
+     * it, so switching rooms or watching somebody join re-homes a live renderer instead of
+     * building a new one and losing a second of animation each time.
+     */
+    function mountLoom() {
+        const wrap = $('.loom-canvas-wrap', mount);
+        if (!wrap) { loom?.stop(); return; }   // not standing in a voice room
+
+        if (!loomCanvas) {
+            loomCanvas = document.createElement('canvas');
+            loomCanvas.className = 'loom-canvas';
+            loomCanvas.setAttribute('aria-hidden', 'true');
+        }
+        if (loomCanvas.parentElement !== wrap) wrap.append(loomCanvas);
+
+        loom ??= new LoomRenderer(loomCanvas, {
+            mode: prefs.loomMode,
+            getVoices: loomVoices,
+            onRing: loomRing,
+        });
+        applyMotionPrefs();
+    }
+
+    /**
+     * Whether the animations run at all.
+     *
+     * One owner, because the previous split was wrong in a way nobody would notice for
+     * months: the preference change stopped the background, but start-up called start()
+     * unconditionally, so launching with "Still background" already on gave a frozen
+     * weave rather than none. Both animations now answer to this and nothing else.
+     *
+     * stop() clears as well as halting — a bare stop leaves the last frame painted, which
+     * reads as a photograph of a living thing rather than as its absence.
+     */
+    function applyMotionPrefs() {
+        // A tile in fullscreen is the second reason to stop, and it is not a preference:
+        // see onFullscreenChange for what these cost over a full-screen video.
+        // Bubbles stop drifting for the same reasons, but stay where they are: still is not gone.
+        bubbleRoom?.setMoving(!(prefs.staticBackground || document.fullscreenElement));
+        if (prefs.staticBackground || document.fullscreenElement) {
+            background?.stop();
+            loom?.stop();
+            return;
+        }
+        background?.start();
+        loom?.start();
+    }
+
+    /* ── talking to the server ───────────────────────────────────────────── */
+
+    function applyFrame(msg) {
+        // Module messages arrive namespaced, so a module can never shadow a core type.
+        if (bubbleRoom?.handle(msg)) {
+            paintBubblesButton();
+            return;
+        }
+
+        if (msg.type === 'text-chat:message' && msg.message) {
+            const record = msg.message;
+            const viewId = state.raw.viewChannelId ?? state.raw.currentChannelId;
+            const fresh = state.addMessage(record.channelId, record);
+            if (record.channelId === viewId) msgNoise.record(Date.now());
+            if (fresh) {
+                chimeFor({
+                    fromSelf: record.userId === state.raw.me?.id,
+                    onScreen: !state.raw.activeDmId && record.channelId === viewId,
+                    addressed: (record.mentions ?? []).includes(state.raw.me?.username),
+                });
+            }
+
+            // Seen or owed: a message in front of a reader at the bottom of the timeline
+            // is acked; anything else becomes the badge on that channel's row.
+            if (record.userId !== state.raw.me?.id) {
+                if (readingNow(record.channelId)) {
+                    ackRead(record.channelId);
+                } else if (record.channelId !== state.raw.currentChannelId || canBrowse) {
+                    state.bumpUnread(record.channelId, {
+                        mention: (record.mentions ?? []).includes(state.raw.me?.username),
+                    });
+                }
+            }
+            return;
+        }
+
+        if (msg.type === 'media_reset') {
+            // The server's announced media address moved — on a home line the ISP can
+            // change it under us, and every transport we hold is now pointed at somebody
+            // else's IP. Nothing looks wrong from here: the socket is fine, the roster is
+            // right, and no audio arrives in either direction. Rebuild against the new
+            // address rather than waiting out an ICE timeout per transport.
+            const channel = state.raw.channels.find((c) => c.id === state.raw.currentChannelId)
+                ?? { id: state.raw.currentChannelId };
+            // Without capabilities startVoice() tears media down and then returns before
+            // rebuilding it — worse than doing nothing. Leave the existing path alone and
+            // let it heal the slow way instead.
+            if (state.raw.currentChannelId && msg.rtpCapabilities) {
+                startVoice({
+                    type: 'moved',
+                    channel,
+                    mediaReset: true,
+                    rtpCapabilities: msg.rtpCapabilities,
+                    peers: roomPeers(),
+                }).catch((err) => {
+                    voiceState = { state: 'failed', message: err.message };
+                    paint();
+                });
+            }
+            return;
+        }
+
+        if (msg.type === 'producers_truth') {
+            // Server memory beats client memory: update the roster's bookkeeping AND
+            // hand the same list straight to the media layer, so the heal runs on what
+            // the server knows rather than on whatever frames happened to survive.
+            state.applyProducersTruth(msg.producers);
+            // Authoritative: these are the server's producer ids, so a consumer of any
+            // other producer is one the server has already closed, and is replaced.
+            voice.sync(msg.producers, { authoritative: true }).catch(() => {});
+            paintStage();
+            return;
+        }
+
+        if (msg.type === 'text-chat:typing' && msg.channelId) {
+            // 8s of life per ping against the server's 4s relay throttle: one lost ping
+            // costs a flicker, never a stuck banner. The receiver owns expiry — and
+            // schedules the repaint that makes the lapse visible, since expiry is the
+            // one state change no event announces.
+            state.noteTyping(msg.channelId, msg.username, 8000);
+            setTimeout(() => paint(), 8200);
+            return;
+        }
+        if (msg.type === 'dm:typing' && msg.threadId) {
+            state.noteTyping(msg.threadId, msg.username, 8000);
+            setTimeout(() => paint(), 8200);
+            return;
+        }
+        if (msg.type === 'reactions:changed' && msg.messageId) {
+            state.applyReaction(msg);
+            return;
+        }
+
+        if (msg.type === 'slash-commands:result') {
+            // Where it lands: the channel it was typed in, which a current server names.
+            // An older one names nothing and sends it to the room the person stands in,
+            // so that is where it goes.
+            const channelId = msg.channelId
+                ?? state.raw.peers.get(msg.by?.cid)?.channelId
+                ?? state.raw.currentChannelId;
+            if (msg.by?.cid && msg.by.cid === link.cid) pendingCommand = null;
+            if (channelId) state.addMessage(channelId, resultItem(msg));
+            return;
+        }
+        if (msg.type === 'error' && pendingCommand && COMMAND_REFUSALS.has(msg.code)
+            && Date.now() - pendingCommand.at < 5000) {
+            const { channelId } = pendingCommand;
+            pendingCommand = null;
+            if (channelId) state.addMessage(channelId, refusalItem(msg.message));
+            return;
+        }
+
+        if (msg.type === 'sounds:play') {
+            // The server already filtered this to peers in the announcer's channel,
+            // excluding the announcer — nothing left to check here.
+            playSound(msg.soundId);
+            return;
+        }
+
+        if (msg.type === 'text-chat:cleared' && msg.channelId) {
+            // An admin emptied the channel. What we are showing of it is now fiction.
+            state.setMessages(msg.channelId, []);
+            state.clearUnread(msg.channelId);
+            return;
+        }
+
+        if (msg.type === 'dm:message' && msg.message) {
+            const record = msg.message;
+            state.raw.typing.get(record.threadId)?.delete(record.authorName);
+            const known = state.raw.dms.some((t) => t.id === record.threadId);
+            if (!known) {
+                // Someone opened a brand-new thread by writing into it: fetch the rail
+                // fresh so their tile appears, then account for this first word.
+                api.request('GET', '/api/dm/threads')
+                    .then(({ threads = [] }) => { state.setDmThreads(threads); paint(); })
+                    .catch(() => {});
+            }
+            const freshDm = state.addDmMessage(record.threadId, record);
+            // A DM is addressed to you by definition, so it sounds wherever you are looking.
+            if (freshDm) {
+                chimeFor({
+                    fromSelf: record.authorId === state.raw.me?.id,
+                    onScreen: state.raw.activeDmId === record.threadId,
+                    addressed: true,
+                });
+            }
+            if (record.authorId !== state.raw.me?.id) {
+                if (state.raw.activeDmId === record.threadId && document.visibilityState !== 'hidden') {
+                    ackDmRead(record.threadId);
+                } else {
+                    state.bumpDmUnread(record.threadId);
+                }
+            }
+            return;
+        }
+        if (msg.type === 'dm:accepted') return;   // our own echo carries the message frame
+
+        if (msg.type === 'dm:ring') {
+            showRing(msg);
+            return;
+        }
+        if (msg.type === 'dm:call_live') {
+            activeCallThreadId = msg.threadId;
+            ringModal?.close();
+            ringModal = null;
+            paint();
+            return;
+        }
+        if (msg.type === 'dm:call_ended') {
+            ringModal?.close();
+            ringModal = null;
+            const wasMine = activeCallThreadId === msg.threadId || msg.threadId;
+            activeCallThreadId = null;
+            if (wasMine) {
+                const back = preCallChannelId;
+                preCallChannelId = null;
+                const standing = state.raw.currentChannelId;
+                const inCallRoom = standing && !state.raw.channels.some((c) => c.id === standing);
+                if (inCallRoom) {
+                    if (back && state.raw.channels.some((c) => c.id === back)) {
+                        link.noteChannel(back);
+                        link.send('move', { channelId: back });
+                    } else {
+                        voice.stop();
+                        link.noteChannel(null);
+                        link.send('leave');
+                    }
+                }
+                voiceState = {
+                    state: 'unavailable',
+                    message: msg.reason === 'declined' ? 'Call declined.'
+                        : msg.reason === 'no_answer' ? 'No answer.'
+                            : 'Call ended.',
+                };
+                paint();
+                setTimeout(() => { voiceState = { state: 'idle' }; paint(); }, 4000);
+            }
+            return;
+        }
+
+        if (msg.type === 'left') {
+            state.apply(msg);
+            return;
+        }
+
+        if (msg.type === 'roles_changed') {
+            // An admin granted or removed our tester/admin flag while we are signed in. The
+            // room's `user` is a snapshot taken at sign-in, so without this the stream-quality
+            // buttons would stay hidden (or lingering) until the next launch. Update the
+            // snapshot in place and repaint the stage, which is what gates the buttons.
+            if (user) {
+                if (typeof msg.isTester === 'boolean') user.isTester = msg.isTester;
+                if (typeof msg.isAdmin === 'boolean') user.isAdmin = msg.isAdmin;
+            }
+            paintStage();
+            return;
+        }
+
+        if (msg.type === 'peer_profile_changed') {
+            state.apply(msg);
+            // A replaced picture keeps the account but changes the id, so the cache is
+            // asked for the new one on the next paint and the old object URL is released.
+            if (msg.avatar) avatarCache.forget(msg.avatar);
+            paint();
+            paintStage();
+            return;
+        }
+
+        if (msg.type === 'peer_force_muted') {
+            state.apply(msg);
+            // Only OUR microphone is ours to act on. Somebody else being muted changes a
+            // mark in the roster and nothing about this machine's audio.
+            if (msg.userId === state.raw.me?.id) {
+                const me = state.toShell().me;
+                voice.setMuted(effectiveMute({
+                    pushToTalk: Boolean(prefs.pushToTalk),
+                    held: pttHeld,
+                    muted: me.muted,
+                    deafened: Boolean(me.deafened),
+                    forceMuted: Boolean(me.forceMuted),
+                }));
+            }
+            paint();
+            return;
+        }
+
+        // The acknowledgement of our OWN moderation action. The roster already changed via
+        // the broadcast, so there is nothing to apply — but the menu is gone by now and a
+        // silent success is indistinguishable from a dropped message.
+        if (msg.type === 'serverMuteChanged' || msg.type === 'kickedPeer') return;
+
+        if (msg.type === 'kicked') {
+            // The socket is already closing. Say why, and let the link come back on its
+            // own once the cooldown it was given has passed.
+            voice.stop();
+            voiceState = {
+                state: 'unavailable',
+                message: msg.by
+                    ? `${msg.by} removed you from the room.`
+                    : 'An administrator removed you from the room.',
+            };
+            paint();
+            return;
+        }
+
+        // A stream starting or stopping in this room is heard, as on the web app. Asked
+        // before anything applies the frame: the decision needs the roster as it stood.
+        // stream-cues.js decides which announcements are real starts and stops.
+        if (['producer_new', 'producer_closed', 'peer_joined', 'peer_left', 'moved', 'joined'].includes(msg.type)) {
+            const cue = streamCues.observe(msg, {
+                peer: state.raw.peers.get(msg.cid ?? msg.peer?.cid) ?? null,
+                currentChannelId: state.raw.currentChannelId,
+                selfUserId: state.raw.me?.id ?? null,
+            });
+            if (cue) playBundledCue(cue);
+        }
+
+        if (msg.type === 'moved' || msg.type === 'joined') {
+            msgNoise.reset();
+            spotlight = null;
+            // Stepping INTO a call room remembers the room being left, so ending the
+            // call puts you back where you stood rather than nowhere.
+            if (msg.channel?.system && !state.raw.channels.some((c) => c.id === msg.channel.id)) {
+                preCallChannelId ??= state.raw.currentChannelId;
+            }
+            state.apply(msg);
+            // Both fetches land AFTER the joined frame has painted, so they must paint
+            // again themselves — without it the rail and the badges sat empty until the
+            // next unrelated event happened to repaint (caught by an E2E on a restart).
+            if (msg.type === 'joined' && canBrowse) {
+                api.request('GET', '/api/chat/reads')
+                    .then(({ channels = [] }) => { state.setReads(channels); paint(); })
+                    .catch(() => { /* badges start at zero; the frames keep them honest */ });
+            }
+            if (msg.type === 'joined' && canDm) {
+                api.request('GET', '/api/dm/threads')
+                    .then(({ threads = [] }) => { state.setDmThreads(threads); paint(); })
+                    .catch(() => { /* the rail stays empty; a reconnect retries */ });
+            }
+            // Bubbles belong to no room, so only a fresh connection asks — a move does not.
+            if (msg.type === 'joined') bubbleRoom?.load().then(paintBubblesButton);
+            // Entering a room is seeing its latest page, so the backlog is acked too —
+            // without this, days of history in your home room stay "unread" for ever.
+            // Arriving NOWHERE loads nothing and starts nothing.
+            if (msg.channel?.id) loadHistory(msg.channel.id)
+                .then(() => { if (canBrowse) ackRead(msg.channel.id); })
+                .catch(() => {});
+            if (!msg.channel) return;
+            startVoice(msg).catch((err) => {
+                voiceState = { state: 'failed', message: err.message };
+                paint();
+            });
+            return;
+        }
+
+        // A screen starting or stopping is part of what happened in this room, so it
+        // lands in the timeline the way the design draws it — before the voice layer
+        // claims the frame. Screens only: camera toggles would be noise.
+        if ((msg.type === 'producer_new' || msg.type === 'producer_closed') && msg.slot === 'screen') {
+            const peer = state.raw.peers.get(msg.cid);
+            const channelId = peer?.channelId ?? state.raw.currentChannelId;
+            if (peer && channelId) {
+                state.addMessage(channelId, {
+                    kind: 'system',
+                    id: `sys-${msg.type === 'producer_new' ? 'start' : 'end'}-${msg.producerId}`,
+                    icon: 'screen',
+                    who: peer.displayName || peer.username,
+                    text: msg.type === 'producer_new'
+                        ? 'started streaming their screen'
+                        : 'stopped streaming',
+                    createdAt: Date.now(),
+                });
+            }
+        }
+
+        // Media frames first: the voice layer is waiting on specific replies, and a frame it
+        // has claimed is not something the roster needs to see.
+        if (voice.handle(msg)) {
+            state.apply(msg);
+            // Placeholder tiles are drawn from the roster's producer lists, so the frames
+            // that change those lists repaint the stage even when no stream is consumed.
+            if (msg.type === 'producer_closed' && msg.cid) lastFrames.delete(`${msg.cid}:${msg.slot}`);
+            if (msg.type === 'peer_left' && msg.cid) {
+                for (const key of [...lastFrames.keys()]) if (key.startsWith(`${msg.cid}:`)) lastFrames.delete(key);
+            }
+            if (['producer_new', 'producer_closed', 'peer_left'].includes(msg.type)) paintStage();
+            return;
+        }
+
+        state.apply(msg);
+        // The server is the authority on this flag — it may have forced muted:true
+        // alongside it, and another of this account's devices can change it. Reasserting
+        // here (idempotent) means the audio always matches the state everyone can see.
+        if (msg.type === 'muteChanged') voice.setDeafened(Boolean(msg.deafened));
+        if (['joined', 'moved', 'peer_joined', 'peer_left'].includes(msg.type)) paintStage();
+    }
+
+    /**
+     * Bring voice up for the room we have just entered.
+     *
+     * A move puts us on a different router, so every consumer from the old room is dead and
+     * the whole set has to be rebuilt against whoever is here now.
+     */
+    async function startVoice(frame) {
+        const channel = frame.channel;
+        if (frame.type === 'moved') {
+            await voice.onMoved({
+                rtpCapabilities: frame.rtpCapabilities,
+                mediaReset: frame.mediaReset === true,
+            });
+        } else if (frame.type === 'joined' && frame.resumed) {
+            // RESUMED: the server kept the peer this socket was standing as, so every
+            // transport, producer and consumer we hold is still the real one and nobody in
+            // the room was told anything happened. Rebuilding here would throw away
+            // precisely what the resume saved — a running screen share included — so the
+            // most there can be to mend is an ICE path, and only one that says it is broken.
+            await voice.onResumed();
+        } else if (frame.type === 'joined') {
+            // A 'joined' frame is a BRAND-NEW server-side peer — which is what a reconnect
+            // produces when the resume is refused (an outage longer than the server's
+            // grace, a server too old to hold a dropped peer at all, or one that
+            // restarted). The server has no transports, producers or consumers for us
+            // at all, but the local objects survive the socket drop: ensureSend()/
+            // ensureRecv() see them, hand them straight back without asking for
+            // replacements, and every produce and consume against those zombies is refused
+            // with 'no_transport' for the rest of the session. The room looks joined, the
+            // roster is right, and no audio moves in either direction. Rebuild from nothing
+            // instead — but keep what this person had chosen to watch, which is about
+            // people rather than about connections, and what they were sharing: the
+            // captures outlive the rebuild, and enableMic() below puts them back.
+            await voice.onMoved({
+                rtpCapabilities: frame.rtpCapabilities, mediaReset: true, reconnect: true,
+            });
+        }
+        if (!frame.rtpCapabilities) return;
+
+        await voice.start(frame.rtpCapabilities);
+
+        // Consume everyone already talking before opening our own microphone, so the room
+        // is audible immediately rather than after a permission prompt is answered.
+        //
+        // FILTERED to this channel: the joined frame carries the whole server's roster
+        // (for the sidebar), and consuming someone in another room stalls twelve seconds
+        // per producer waiting for a reply the server rightly refuses — enough stalls and
+        // the people actually beside you are never consumed. That was a real, reported
+        // one-way-audio bug.
+        //
+        // A resume kept every consumer it had, so there is nothing here to open.
+        const roomRoster = (frame.peers ?? []).filter((p) => p.channelId === channel?.id);
+        if (!frame.resumed) {
+            for (const peer of roomRoster) await voice.consumePeer(peer);
+            // AFTER that loop, not before: consumePeer skips watchable slots that are not
+            // watched, so re-aiming first would have both of them asking for the same
+            // screen at once. Watchable slots are this call's alone.
+            await voice.restoreWatches(roomRoster, channel?.id ?? null);
+        }
+        // And one reconciliation straight after: anything that changed WHILE the loop
+        // above was awaiting is caught now rather than at the next beat — and once more
+        // shortly after, for the peer whose arrival raced this very join (the second
+        // party of a call answering while the first was still setting up).
+        //
+        // The first is authoritative because the roster was replaced by the server's
+        // snapshot a moment ago. After a RESUME that matters most: every consumer was
+        // kept, and any of them whose producer changed while the socket was down is a
+        // consumer of nothing — the frames that would have said so went to the old socket.
+        voice.sync(roomPeers(), { authoritative: true }).catch(() => {});
+        setTimeout(() => voice.sync(roomPeers()).catch(() => {}), 3000);
+
+        if (channel?.allowVoice === false) {
+            // The server has already closed the microphone producer on its side — that is
+            // what a room forbidding voice MEANS, and hiding a mic button would only be a
+            // suggestion. It does not say so, though, and mediasoup-client is not told
+            // either, so this side agrees explicitly. Without it the stale handle survives
+            // the visit and enableMic() hands it back on the way out, leaving somebody who
+            // was moved here by the idle sweep silent for the rest of the session.
+            voice.releaseMicProducer();
+            // Deafen is about what reaches you, and the away room still carries video and its
+            // audio. Reasserting it here rather than only past this return is the difference
+            // between "silence, as asked for" and sound coming back on a move.
+            voice.setDeafened(Boolean(state.toShell().me.deafened));
+            voiceState = { state: 'unavailable', message: `Voice is off in ${channel.name}.` };
+            paint();
+            return;
+        }
+
+        // A rebuild creates brand-new consumers. Reassert deafen against them before the
+        // microphone comes up, so a reconnect or a channel move can never restore sound
+        // to somebody who asked for silence.
+        voice.setDeafened(Boolean(state.toShell().me.deafened));
+
+        try {
+            await voice.enableMic();
+            voice.setMuted(effectiveMute({
+                pushToTalk: Boolean(prefs.pushToTalk),
+                held: pttHeld,
+                muted: state.toShell().me.muted,
+                deafened: Boolean(state.toShell().me.deafened),
+                forceMuted: Boolean(state.toShell().me.forceMuted),
+            }));
+        } catch (err) {
+            // A refused microphone is a completely normal thing for someone to do, and the
+            // room still works without one — you can read, type and listen.
+            voiceState = {
+                state: 'no-mic',
+                message: err?.name === 'NotAllowedError'
+                    ? 'Microphone blocked. You can still hear everyone.'
+                    : `Microphone unavailable: ${err.message}`,
+            };
+            paint();
+        }
+    }
+
+    /** Staple aggregated reactions onto a fetched page. Absent module, absent call. */
+    async function withReactions(records) {
+        if (!canReact || !records?.length) return records ?? [];
+        try {
+            const ids = records.map((r) => r.id).join(',');
+            const { reactions } = await api.request('GET', `/api/reactions?messageIds=${ids}`);
+            return records.map((r) => (reactions[r.id] ? { ...r, reactions: reactions[r.id] } : r));
+        } catch {
+            return records;   // history without reaction counts still beats no history
+        }
+    }
+
+    async function loadHistory(channelId) {
+        if (!channelId) return;
+        const entry = freshHistory();
+        history.set(channelId, entry);
+        try {
+            const reply = await api.request('GET',
+                `/api/chat/${encodeURIComponent(channelId)}/messages?${nextPageQuery(entry)}`);
+            history.set(channelId, advanceHistory(entry, reply));
+            // The page arrives oldest-first already; it IS the timeline.
+            state.setMessages(channelId, await withReactions(reply.messages));
+        } catch {
+            // A server with the chat module disabled answers 404, and that is a legitimate
+            // configuration rather than an error. The room still works; it just has no text.
+            history.set(channelId, { ...entry, done: true });
+            state.setMessages(channelId, []);
+        }
+    }
+
+    /**
+     * The page before the oldest one held, fetched as the reader nears the top.
+     *
+     * One request at a time, and never again once the server reports the beginning —
+     * shouldLoadOlder() is the whole policy, tested on its own.
+     */
+    async function loadOlder(channelId) {
+        const entry = history.get(channelId);
+        if (!entry || entry.busy) return;
+        history.set(channelId, { ...entry, busy: true });
+        paintHistoryNote(channelId);
+        try {
+            const reply = await api.request('GET',
+                `/api/chat/${encodeURIComponent(channelId)}/messages?${nextPageQuery(entry)}`);
+            history.set(channelId, advanceHistory(entry, reply));
+            if (!state.prependMessages(channelId, await withReactions(reply.messages))) paint();
+        } catch {
+            // A failed page is retried by the next scroll; the timeline already held is
+            // untouched. busy is released either way.
+            history.set(channelId, { ...entry, busy: false });
+            paint();
+        }
+    }
+
+    /** The one line above the oldest message: fetching, or the start of the room. */
+    function paintHistoryNote(channelId) {
+        const list = $('#msgList', mount);
+        if (!list) return;
+        $('.history-note', mount)?.remove();
+        const entry = history.get(channelId);
+        if (!entry) return;
+        if (entry.busy) {
+            list.insertAdjacentHTML('beforebegin',
+                '<div class="history-note">Fetching earlier messages…</div>');
+        } else if (entry.done && ((state.raw.viewChannelId ?? state.raw.currentChannelId) === channelId)
+            && (state.raw.messages.get(channelId)?.length ?? 0) > 0) {
+            list.insertAdjacentHTML('beforebegin',
+                '<div class="history-note cap">Where it all began.</div>');
+        }
+    }
+
+    /* ── rich content: uploads, previews, images, embeds ─────────────────── */
+
+    // The image waiting on the composer, if any: uploaded already, sent with the next
+    // message, shown as a chip the user can discard.
+    let pendingAttachment = null;
+    let attachInput = null;
+
+    // Messages whose video embed the user has started; the view renders those as the
+    // live iframe rather than the card.
+    const playingEmbeds = new Set();
+    // Messages whose link preview the reader closed. For this sitting only, as on the web
+    // app: a preview is decoration, and remembering every dismissal forever would be a
+    // store with no way to see or undo what is in it.
+    const dismissedPreviews = new Set();
+
+    // url -> objectURL for auth-gated images, so each image is fetched once.
+    const blobUrls = new Map();
+    // url -> preview | null (null = asked and answered nothing), so the server is asked once.
+    const previewCache = new Map();
+    const previewAsked = new Set();
+
+    /** Fill every <img data-auth-src> with bearer-fetched bytes. Idempotent per paint. */
+    function hydrateAuthImages() {
+        for (const img of $$('img[data-auth-src]', mount)) {
+            const url = img.dataset.authSrc;
+            delete img.dataset.authSrc;
+            const held = blobUrls.get(url);
+            if (held) { img.src = held; continue; }
+            api.fetchBlob(url).then((blob) => {
+                const obj = URL.createObjectURL(blob);
+                blobUrls.set(url, obj);
+                img.src = obj;
+            }).catch(() => { img.closest('.attach-image-wrap')?.remove(); });
+        }
+    }
+
+    /**
+     * Play a join/leave sound by id. The server sends only the id — the bytes are
+     * fetched and cached exactly like an auth-gated image, via the same `blobUrls`
+     * map: a sound's id names immutable bytes, so once fetched it never needs asking
+     * for again. Played on the room's output device, not the system default — see cue.js.
+     */
+    function playSound(soundId) {
+        if (!soundId) return;
+        const url = `/api/sounds/${encodeURIComponent(soundId)}/audio`;
+        const play = (src) => playCue(new Audio(src), prefs.audioOutput).catch(() => {});
+        const held = blobUrls.get(url);
+        if (held) { play(held); return; }
+        api.fetchBlob(url).then((blob) => {
+            const obj = URL.createObjectURL(blob);
+            blobUrls.set(url, obj);
+            play(obj);
+        }).catch(() => { /* the sound may have been deleted since it was chosen */ });
+    }
+
+    /**
+     * One of the app's own sounds: a stream starting or stopping, a microphone toggled by
+     * its shortcut. One element per cue, loaded on first use and CLONED per play, so two
+     * streams starting together both sound rather than the second restarting the first.
+     * Same output device as everything else the room plays — see cue.js.
+     */
+    function playBundledCue(kind) {
+        const url = BUNDLED_CUE_URLS[kind];
+        if (!url) return;
+        bundledCueAudio[kind] ??= new Audio(url);
+        playCue(bundledCueAudio[kind].cloneNode(), prefs.audioOutput).catch(() => { /* autoplay; a missed chime is harmless */ });
+    }
+
+    /** The message chime, when notify.js says this message deserves one. */
+    function chimeFor({ fromSelf, onScreen, addressed }) {
+        const cue = messageCue({
+            fromSelf, onScreen, addressed,
+            deafened: Boolean(state.raw.peers.get(state.raw.selfCid)?.deafened),
+            prefs,
+        });
+        if (cue) playBundledCue(cue);
+    }
+
+    /**
+     * Ask the server about the first link in any message that has one and no preview
+     * yet. Once per message, once per URL — the server caches too, but not asking at
+     * all is cheaper than asking politely.
+     */
+    function requestPreviews(channelId) {
+        if (!canPreview) return;
+        const list = state.raw.messages.get(channelId) ?? [];
+        for (const record of list) {
+            if (record.preview !== undefined && record.preview !== null) continue;
+            if (previewAsked.has(record.id)) continue;
+            const url = extractUrls(record.body)[0];
+            if (!url) continue;
+            previewAsked.add(record.id);
+            const held = previewCache.get(url);
+            if (held !== undefined) {
+                if (held) state.setMessagePreview(channelId, record.id, held);
+                continue;
+            }
+            api.request('GET', `/api/link-preview?url=${encodeURIComponent(url)}`)
+                .then((data) => {
+                    previewCache.set(url, data);
+                    state.setMessagePreview(channelId, record.id, data);
+                })
+                .catch(() => { previewCache.set(url, null); });
+        }
+    }
+
+    /** What the server's uploads module will take. Anything else would only come back refused. */
+    const ATTACHABLE = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+
+    /** Upload one file and park it on the composer. The picker and a paste both end here. */
+    async function attachFile(file) {
+        if (!file) return;
+        paintAttachStrip({ uploading: true, name: file.name || 'image' });
+        try {
+            const stored = await api.uploadFile(file);
+            pendingAttachment = { ...stored, name: (file.name || 'image').slice(0, 80) };
+            paintAttachStrip();
+        } catch (err) {
+            pendingAttachment = null;
+            paintAttachStrip({ error: err?.message ?? 'Upload failed.' });
+        }
+    }
+
+    async function pickAttachment() {
+        if (!attachInput) {
+            attachInput = document.createElement('input');
+            attachInput.type = 'file';
+            attachInput.accept = ATTACHABLE.join(',');
+            attachInput.addEventListener('change', () => {
+                const file = attachInput.files?.[0];
+                attachInput.value = '';
+                attachFile(file);
+            });
+        }
+        attachInput.click();
+    }
+
+    /**
+     * A screenshot pasted straight into the composer, as the web app took it. Only when
+     * the clipboard holds an image the server accepts and no text: pasting a paragraph that
+     * happens to arrive with a rendered picture of itself must still paste the paragraph.
+     */
+    function onComposerPaste(event) {
+        const data = event.clipboardData;
+        if (!data || data.getData('text/plain')) return;
+        const file = [...(data.files ?? [])].find((f) => ATTACHABLE.includes(f.type));
+        if (!file) return;
+        event.preventDefault();
+        attachFile(file);
+    }
+
+    /** The little chip above the composer: what is about to ride the next message. */
+    function paintAttachStrip(stateOverride = null) {
+        let strip = $('#attachStrip', mount);
+        if (!strip) {
+            const wrap = $('.composer-wrap', mount) ?? $('.composer', mount)?.parentElement;
+            if (!wrap) return;
+            strip = document.createElement('div');
+            strip.id = 'attachStrip';
+            wrap.prepend(strip);
+        }
+        if (stateOverride?.uploading) {
+            strip.innerHTML = safe`<span class="attach-chip">Uploading ${stateOverride.name}…</span>`;
+            return;
+        }
+        if (stateOverride?.error) {
+            strip.innerHTML = safe`<span class="attach-chip error">${stateOverride.error}</span>`;
+            setTimeout(() => { if (!pendingAttachment) strip.innerHTML = ''; }, 4000);
+            return;
+        }
+        if (!pendingAttachment) { strip.innerHTML = ''; return; }
+        strip.innerHTML = safe`
+          <span class="attach-chip">
+            <img data-auth-src="${pendingAttachment.url}" alt="">
+            <span>${pendingAttachment.name}</span>
+            <button type="button" data-attach-clear aria-label="Remove attachment">✕</button>
+          </span>`;
+        hydrateAuthImages();
+    }
+
+    /* ── the composer's emoji palette ────────────────────────────────────── */
+
+    const COMPOSER_EMOJI = [
+        '😀', '😄', '😂', '🤣', '😊', '😉', '😍', '😘',
+        '🤔', '🙃', '😅', '😭', '😤', '😡', '🥶', '😱',
+        '👍', '👎', '👏', '🙌', '🤝', '💪', '🙏', '👀',
+        '❤️', '🔥', '✨', '🎉', '💯', '✅', '❌', '❓',
+        '🍕', '☕', '🍺', '🎮', '🎲', '🎧', '🖥️', '🚀',
+    ];
+    let emojiPopEl = null;
+
+    function closeEmojiPop() { emojiPopEl?.remove(); emojiPopEl = null; }
+
+    function toggleEmojiPop(anchor) {
+        if (emojiPopEl) return closeEmojiPop();
+        const pop = document.createElement('div');
+        pop.className = 'emoji-pop';
+        pop.innerHTML = COMPOSER_EMOJI.map((e) =>
+            `<button type="button" data-emoji-insert="${e}" aria-label="Insert ${e}">${e}</button>`).join('');
+        const wrap = anchor.closest('.composer');
+        wrap.style.position = 'relative';
+        wrap.append(pop);
+        emojiPopEl = pop;
+    }
+
+    /* ── the image lightbox ──────────────────────────────────────────────── */
+
+    function openLightbox(src, alt = '') {
+        closeLightbox();
+        const layer = document.createElement('div');
+        layer.className = 'lightbox';
+        layer.id = 'lightbox';
+        layer.innerHTML = safe`
+          <button type="button" class="lightbox-close" data-lightbox-close
+                  aria-label="Close (Esc)">✕</button>
+          <img src="${src}" alt="${alt}">`;
+        layer.addEventListener('click', (e) => {
+            // The image itself is the only thing that is not an exit.
+            if (e.target.tagName !== 'IMG') closeLightbox();
+        });
+        mount.append(layer);
+        document.addEventListener('keydown', lightboxKey);
+    }
+    function lightboxKey(e) { if (e.key === 'Escape') closeLightbox(); }
+    function closeLightbox() {
+        $('#lightbox', mount)?.remove();
+        document.removeEventListener('keydown', lightboxKey);
+    }
+
+    /* ── the reaction picker ─────────────────────────────────────────────── */
+
+    // A fixed palette rather than a full emoji keyboard: eight covers most reacting,
+    // and any emoji already on the message can be joined by clicking it.
+    const REACT_SET = ['👍', '❤️', '😂', '😮', '😢', '🔥', '✅', '👀'];
+    let reactPickEl = null;
+
+    function closeReactPicker() {
+        reactPickEl?.remove();
+        reactPickEl = null;
+    }
+
+    function toggleReactPicker(anchor) {
+        const messageId = anchor.closest('[data-message]')?.dataset.message;
+        if (!messageId) return;
+        if (reactPickEl?.dataset.for === messageId) return closeReactPicker();
+        closeReactPicker();
+        const pick = document.createElement('div');
+        pick.className = 'react-pick';
+        pick.dataset.for = messageId;
+        pick.innerHTML = REACT_SET.map((e) =>
+            `<button type="button" data-react="${e}" aria-label="React with ${e}">${e}</button>`).join('');
+        // Inside the message li, so [data-message] resolves for the delegated handler
+        // and a repaint of the list sweeps the popover away with its message. Absolute
+        // within the li: the palette floats over the text and costs the layout nothing.
+        const host = anchor.closest('[data-message]');
+        if (!host) return;
+        host.append(pick);
+        const a = anchor.getBoundingClientRect();
+        const h = host.getBoundingClientRect();
+        // Held inside the message: the add button sits at the END of the reaction row, and
+        // on a phone a palette starting there ran off the right edge of the screen.
+        const furthest = Math.round(h.width - pick.offsetWidth - 8);
+        pick.style.left = `${Math.max(8, Math.min(Math.round(a.left - h.left) - 8, furthest))}px`;
+        // Above the button by default; below it when the timeline's edge would clip it.
+        const scroller = host.closest('.timeline');
+        const clipTop = scroller ? scroller.getBoundingClientRect().top : 0;
+        const above = a.top - pick.offsetHeight - 8 >= clipTop;
+        pick.style.top = above
+            ? `${Math.round(a.top - h.top) - pick.offsetHeight - 8}px`
+            : `${Math.round(a.bottom - h.top) + 8}px`;
+        reactPickEl = pick;
+    }
+
+    /* ── your own status ─────────────────────────────────────────────────── */
+
+    /**
+     * Status lives here rather than in the settings panel on purpose.
+     *
+     * A status buried three clicks into a preferences dialog is one nobody sets and
+     * nobody trusts to be current. Behind your own name is where you already look to
+     * find out what you are showing as.
+     */
+    function toggleSelfMenu(open) {
+        const menu = $('.self-menu', mount);
+        const button = $('[data-self-menu]', mount);
+        if (!menu) return;
+        const next = open ?? menu.hidden;
+        menu.hidden = !next;
+        button?.setAttribute('aria-expanded', String(next));
+        if (next) menu.querySelector('button')?.focus({ preventScroll: true });
+    }
+
+    const closeSelfMenu = () => toggleSelfMenu(false);
+
+    /**
+     * Say what you are.
+     *
+     * Painted before the request rather than after it: the dot is a statement about you,
+     * and making it wait on a round trip means the menu appears not to have worked. The
+     * server's broadcast is what everyone ELSE sees, and it reconciles this if it differs.
+     */
+    async function setStatus(status) {
+        closeSelfMenu();
+        if (!canSetStatus || status === state.raw.me?.status) return;
+
+        const previous = state.raw.me?.status ?? 'online';
+        state.setMyStatus(status);
+        paint();
+        try {
+            await api.request('PATCH', '/api/me', { body: { status } });
+        } catch {
+            // Put it back. A dot that says "away" while the server believes otherwise is
+            // worse than one that never changed, because only the person who set it can
+            // see the lie.
+            state.setMyStatus(previous);
+            paint();
+        }
+    }
+
+    /* ── what the user does ──────────────────────────────────────────────── */
+
+    function wire() {
+        mount.addEventListener('click', (event) => {
+            const dmTile = event.target.closest('[data-dm]');
+            if (dmTile) {
+                openDm(dmTile.dataset.dm);
+                return;
+            }
+            if (event.target.closest('[data-home]')) {
+                state.closeDm();
+                // On a phone the rail lives in the drawer, which covers the room it opens.
+                setDrawer(false);
+                paint();
+                return;
+            }
+            if (event.target.closest('[data-new-dm]')) {
+                if (canDm) toggleDmSearch();
+                return;
+            }
+            if (event.target.closest('[data-dm-call]')) {
+                if (state.raw.activeDmId) {
+                    activeCallThreadId = state.raw.activeDmId;
+                    link.send('dm:call', { threadId: state.raw.activeDmId });
+                    paint();
+                }
+                return;
+            }
+            if (event.target.closest('[data-dm-hangup]')) {
+                // Hanging up is walking home: the move empties the call room, which is
+                // what tells the server — and the other side — that the call is over.
+                const back = preCallChannelId;
+                preCallChannelId = null;
+                activeCallThreadId = null;
+                if (back && state.raw.channels.some((c) => c.id === back)) {
+                    link.noteChannel(back);
+                    link.send('move', { channelId: back });
+                } else {
+                    voice.stop();
+                    link.noteChannel(null);
+                    link.send('leave');
+                }
+                paint();
+                return;
+            }
+            if (event.target.closest('[data-add-member]')) {
+                toggleMemberPicker();
+                return;
+            }
+            if (event.target.closest('[data-all-bubbles]')) {
+                bubbleRoom?.openList();
+                return;
+            }
+
+            if (event.target.closest('[data-attach]')) { pickAttachment(); return; }
+            if (event.target.closest('[data-attach-clear]')) {
+                pendingAttachment = null;
+                paintAttachStrip();
+                return;
+            }
+            const emojiBtn = event.target.closest('[data-emoji]');
+            if (emojiBtn) { toggleEmojiPop(emojiBtn); return; }
+            const emojiPick = event.target.closest('[data-emoji-insert]');
+            if (emojiPick) {
+                const input = $('#composerInput', mount);
+                if (input) {
+                    const at = input.selectionStart ?? input.value.length;
+                    input.setRangeText(emojiPick.dataset.emojiInsert, at, input.selectionEnd ?? at, 'end');
+                    input.focus();
+                    input.dispatchEvent(new Event('input', { bubbles: true }));
+                }
+                return;
+            }
+            if (!event.target.closest('.emoji-pop') && emojiPopEl) closeEmojiPop();
+
+            const shot = event.target.closest('[data-lightbox]');
+            if (shot?.src) { openLightbox(shot.src, shot.alt); return; }
+            if (event.target.closest('[data-lightbox-close]')) { closeLightbox(); return; }
+
+            const dismiss = event.target.closest('[data-dismiss-preview]');
+            if (dismiss) {
+                dismissedPreviews.add(dismiss.dataset.dismissPreview);
+                paint();
+                return;
+            }
+
+            const embed = event.target.closest('[data-embed-play]');
+            if (embed) {
+                // Click-to-play: only NOW does the provider's player get a seat, and only
+                // its official embed surface, sandboxed. The playing set drives the VIEW,
+                // so repaints re-render the iframe instead of killing the video.
+                playingEmbeds.add(embed.dataset.embedPlay);
+                paint();
+                return;
+            }
+
+            const dl = event.target.closest('[data-download]');
+            if (dl) {
+                const a = dl.closest('[data-message]');
+                const url = `/api/uploads/${dl.dataset.download}`;
+                api.fetchBlob(url).then((blob) => {
+                    const obj = URL.createObjectURL(blob);
+                    const link2 = document.createElement('a');
+                    link2.href = obj;
+                    link2.download = a?.querySelector('.attach-name')?.textContent ?? 'file';
+                    link2.click();
+                    setTimeout(() => URL.revokeObjectURL(obj), 30_000);
+                }).catch(() => {});
+                return;
+            }
+
+            const chip = event.target.closest('[data-react]');
+            if (chip) {
+                const messageId = chip.closest('[data-message]')?.dataset.message;
+                if (messageId) link.send('reactions:react', { messageId, emoji: chip.dataset.react });
+                closeReactPicker();
+                return;
+            }
+            const adder = event.target.closest('[data-add-reaction]');
+            if (adder) {
+                toggleReactPicker(adder);
+                return;
+            }
+            if (!event.target.closest('.react-pick')) closeReactPicker();
+
+            const watch = event.target.closest('[data-watch]');
+            if (watch) {
+                const key = watch.dataset.watch;
+                const [cid] = key.split(':');
+                const peer = state.raw.peers.get(cid);
+                if (!peer) return;
+                if (peer.channelId === state.raw.currentChannelId) {
+                    watchTile(key);
+                } else if (peer.channelId) {
+                    // Elsewhere: participate — join their room, where their stream waits
+                    // as a placeholder like any other.
+                    link.noteChannel(peer.channelId);
+                    link.send('move', { channelId: peer.channelId });
+                }
+                return;
+            }
+
+            const watchBtn = event.target.closest('[data-watch-tile]');
+            if (watchBtn) {
+                watchTile(watchBtn.dataset.watchTile);
+                return;
+            }
+            const spot = event.target.closest('[data-spotlight]');
+            if (spot) {
+                const key = spot.closest('[data-tile]')?.dataset.tile;
+                if (key) setSpotlight(spotlight === key ? null : key);
+                return;
+            }
+            const nav = event.target.closest('[data-strip-nav]');
+            if (nav) {
+                const strip = nav.closest('.strip-shell')?.querySelector('.stage-strip');
+                // One viewport of thumbnails per press, in reading order.
+                strip?.scrollBy({ left: Number(nav.dataset.stripNav) * strip.clientWidth, behavior: 'smooth' });
+                return;
+            }
+
+            const mute = event.target.closest('[data-listen-mute]');
+            if (mute) {
+                // Guarded rather than assumed: this listener is on the whole shell, and a
+                // control of the same name outside a tile would otherwise crash the handler
+                // — taking every click after it in this chain down with it.
+                const holder = mute.closest('[data-tile]');
+                if (!holder) return;
+                const [cid, slotName] = holder.dataset.tile.split(':');
+                const audioSlot = slotName === 'screen' ? 'screen-audio' : 'audio';
+                const now = voice.getListen(cid, audioSlot);
+                voice.setListen(cid, audioSlot, { muted: !now.muted });
+                paintStage();
+                return;
+            }
+
+            const stop = event.target.closest('[data-stop-watching]');
+            if (stop) {
+                // Its OWN tile: with several watched, stopping one leaves the rest playing.
+                stopWatchingTile(stop.closest('[data-tile]')?.dataset.tile);
+                return;
+            }
+            if (event.target.closest('[data-tile-full]')) {
+                const holder = event.target.closest('[data-tile]');
+                if (document.fullscreenElement === holder) {
+                    document.exitFullscreen().catch(() => { /* already leaving */ });
+                } else {
+                    holder?.requestFullscreen?.().catch(() => { /* denied is fine */ });
+                }
+                return;
+            }
+            const reportBtn = event.target.closest('[data-report-good], [data-report-bad]');
+            if (reportBtn) {
+                const holder = reportBtn.closest('[data-tile]');
+                if (holder) reportStreamQuality(reportBtn.matches('[data-report-bad]'), holder, reportBtn);
+                return;
+            }
+            if (event.target.closest('[data-listen-volume]')) return;   // the slider is not a watch click
+
+            const tile = event.target.closest('[data-tile]');
+            if (tile) {
+                // The big area itself is inert — misclicks on a stream you are reading must
+                // not tear the layout down; the pill's buttons are the way to change it.
+                // Elsewhere, a watched thumbnail beside the spotlight swaps into it, and an
+                // unwatched one starts being watched.
+                if (tile.closest('.stage-main')) return;
+                const key = tile.dataset.tile;
+                if (tile.classList.contains('watched')) setSpotlight(key);
+                else watchTile(key);
+                return;
+            }
+
+            if (event.target.closest('[data-toggle-cam]')) {
+                (voice.webcamOn ? Promise.resolve(voice.disableWebcam()) : voice.enableWebcam())
+                    .catch((err) => {
+                        voiceState = {
+                            state: 'no-mic',
+                            message: err?.name === 'NotAllowedError'
+                                ? 'Camera blocked. Voice still works.'
+                                : `Camera unavailable: ${err.message}`,
+                        };
+                        paint();
+                    })
+                    .finally(() => paintMediaButtons());
+                return;
+            }
+
+            if (event.target.closest('[data-toggle-screen]')) {
+                // Stopping is immediate. Starting asks how first — see openShareSetup.
+                if (voice.screenOn) runShare(Promise.resolve(voice.disableScreen()));
+                else openShareSetup();
+                return;
+            }
+
+            const chat = event.target.closest('[data-open-chat]');
+            if (chat) {
+                openTextChannel(chat.dataset.openChat);
+                setDrawer(false);
+                return;
+            }
+
+            const room = event.target.closest('[data-open]');
+            if (room) {
+                const id = room.dataset.open;
+                const target = state.raw.channels.find((c) => c.id === id);
+                if (target?.private && !target.member) return;   // a locked door is not a button
+                state.closeDm();
+                if (canBrowse && target?.kind === 'text') {
+                    // A text channel is opened, not entered: voice stays wherever the
+                    // reader is standing.
+                    openTextChannel(id);
+                } else if (id !== state.raw.currentChannelId) {
+                    link.noteChannel(id);
+                    link.send('move', { channelId: id });
+                }
+                setDrawer(false);   // picking a room is why the drawer was opened
+                return;
+            }
+
+            if (event.target.closest('[data-open-drawer]')) {
+                setDrawer(!$('.app-shell', mount)?.classList.contains('drawer-open'));
+                return;
+            }
+            if (event.target.closest('[data-drawer-scrim]')) {
+                setDrawer(false);
+                return;
+            }
+
+            if (event.target.closest('[data-toggle-mic]')) {
+                const me = state.toShell().me;
+                // Under push-to-talk the key owns the stream, and under a server mute
+                // nothing this person can press owns it. The button is already disabled in
+                // the markup for both; this is the same rule for anything synthesising a
+                // click, and it asks the policy rather than restating it.
+                if (muteButtonDisabled({ pushToTalk: prefs.pushToTalk, forceMuted: me.forceMuted })) return;
+                const next = !me.muted;
+                // Locally first so the button responds immediately, then tell the room. The
+                // server's broadcast is what everyone else sees; this is what we hear.
+                voice.setMuted(next);
+                link.send('setMute', { muted: next, deafened: Boolean(me.deafened) });
+                return;
+            }
+
+            if (event.target.closest('[data-toggle-audio]')) {
+                const me = state.toShell().me;
+                // Deafening implies muting: it is not honest to keep sending audio to a room
+                // you have stopped listening to.
+                const deafened = !me.deafened;
+                // Locally first, like the microphone toggle: silence is what the button
+                // promises, and it should not wait on a round trip to happen. The server
+                // still pauses the producer, which is what stops us being HEARD.
+                voice.setDeafened(deafened);
+                voice.setMuted(effectiveMute({
+                    pushToTalk: Boolean(prefs.pushToTalk),
+                    held: pttHeld,
+                    muted: me.muted,
+                    deafened,
+                    forceMuted: Boolean(me.forceMuted),
+                }));
+                link.send('setMute', { muted: deafened || me.muted, deafened });
+                return;
+            }
+
+            if (event.target.closest('[data-leave]')) {
+                // Disconnect from VOICE, stay on the server — the tooltip always said
+                // "Leave the room" and it now means it. Sign out lives in settings.
+                voice.stop();
+                voiceState = { state: 'idle' };
+                link.noteChannel(null);
+                link.send('leave');
+                return;
+            }
+
+            if (event.target.closest('[data-browse-rooms]') || event.target.closest('[data-new-room]')) {
+                browser.open(event.target.closest('button'));
+                return;
+            }
+
+            if (event.target.closest('[data-self-menu]')) {
+                toggleSelfMenu();
+                return;
+            }
+
+            const pick = event.target.closest('[data-set-status]');
+            if (pick) {
+                setStatus(pick.dataset.setStatus);
+                return;
+            }
+
+            if (event.target.closest('[data-open-settings]')) {
+                closeSelfMenu();
+                // Caught and written down: an open that failed used to vanish as an unhandled
+                // rejection, which is why "settings will not open" never showed up in a
+                // single attached log.
+                settings.open(event.target.closest('[data-open-settings]')).catch((err) => {
+                    platform.log('error', `Settings failed to open: ${err?.name ?? 'Error'}: ${err?.message ?? err}`);
+                });
+                return;
+            }
+
+        });
+
+        const composer = $('#composer', mount);
+        const input = $('#composerInput', mount);
+
+        composer?.addEventListener('submit', (event) => {
+            event.preventDefault();
+            sendMessage();
+        });
+
+        input?.addEventListener('keydown', (event) => {
+            // The command offer, the same way: Enter completes the name rather than
+            // sending "/ro" to the room as text.
+            if (commandOffer?.items.length) {
+                if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+                    event.preventDefault();
+                    const delta = event.key === 'ArrowDown' ? 1 : -1;
+                    const count = commandOffer.items.length;
+                    commandOffer.index = (commandOffer.index + delta + count) % count;
+                    paintCommandPop();
+                    return;
+                }
+                if (event.key === 'Enter' || event.key === 'Tab') {
+                    event.preventDefault();
+                    pickCommand(commandOffer.items[commandOffer.index].name);
+                    return;
+                }
+                if (event.key === 'Escape') {
+                    commandOffer = null;
+                    paintCommandPop();
+                    return;
+                }
+            }
+
+            // While the mention popover is open it owns the navigation keys — Enter picks
+            // a person rather than sending half a name to the room.
+            if (mention?.items.length) {
+                if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+                    event.preventDefault();
+                    const delta = event.key === 'ArrowDown' ? 1 : -1;
+                    mention.index = (mention.index + delta + mention.items.length) % mention.items.length;
+                    paintMentionPop();
+                    return;
+                }
+                if (event.key === 'Enter' || event.key === 'Tab') {
+                    event.preventDefault();
+                    pickMention(mention.items[mention.index].username);
+                    return;
+                }
+                if (event.key === 'Escape') {
+                    mention = null;
+                    paintMentionPop();
+                    return;
+                }
+            }
+
+            // Enter sends, Shift+Enter starts a new line. The other way round is a choice
+            // some apps make and everyone else finds baffling.
+            if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault();
+                sendMessage();
+            }
+        });
+
+        window.addEventListener('keydown', (event) => {
+            if (event.key !== 'Escape') return;
+            // In fullscreen, Escape is the browser's own way out and it has already been
+            // handled. Acting on it again would both leave fullscreen AND drop the viewer
+            // back to the grid — two things for one press, only one of them asked for.
+            // Leaving fullscreen alone is enough.
+            if (document.fullscreenElement) return;
+            if (spotlight) { setSpotlight(null); return; }
+            setDrawer(false);
+        });
+
+        // Nearing the top of the timeline asks for the page before it. The policy —
+        // once at a time, never past the beginning — lives in history.js.
+        //
+        // The page belongs to the channel on SCREEN, which is not always the one being
+        // stood in: reading a text channel from a voice room used to page the voice room,
+        // so scrolling up in what you were actually reading never fetched anything. A DM
+        // has no history pages to ask for.
+        $('#timeline', mount)?.addEventListener('scroll', (event) => {
+            if (state.raw.activeDmId) return;
+            const channelId = state.raw.viewChannelId ?? state.raw.currentChannelId;
+            if (shouldLoadOlder(history.get(channelId), event.target.scrollTop)) {
+                loadOlder(channelId);
+            }
+        }, { passive: true });
+
+        mount.addEventListener('input', (event) => {
+            const slider = event.target.closest?.('[data-listen-volume]');
+            if (!slider) return;
+            const holder = slider.closest('[data-tile]');
+            if (!holder) return;
+            const [cid, slotName] = holder.dataset.tile.split(':');
+            voice.setListen(cid, slotName === 'screen' ? 'screen-audio' : 'audio',
+                { volume: Number(slider.value) / 100 });
+        });
+
+        mount.addEventListener('pointerdown', (event) => {
+            const divider = event.target.closest?.('[data-stage-divider]');
+            if (!divider) return;
+            event.preventDefault();
+            const stage = $('.stage', mount);
+            const room = $('.room', mount);
+            if (!stage || !room) return;
+            const startY = event.clientY;
+            const startH = stage.offsetHeight;
+            const max = room.clientHeight * 0.62;
+            const move = (ev) => {
+                stageHeightPx = Math.min(max, Math.max(280, startH + ev.clientY - startY));
+                stage.style.height = `${Math.round(stageHeightPx)}px`;
+            };
+            const up = () => {
+                window.removeEventListener('pointermove', move);
+                window.removeEventListener('pointerup', up);
+            };
+            window.addEventListener('pointermove', move);
+            window.addEventListener('pointerup', up);
+        });
+
+        // A tap anywhere is the gesture a browser that refused to start the room's sound was
+        // waiting for. The notice has always said "click anywhere", and nothing listened: the
+        // refused elements stayed paused until somebody new happened to start talking.
+        // Capture phase, so a tap that some other handler stops still counts.
+        const retrySound = () => {
+            if (voiceState.state !== 'blocked') return;
+            voiceState = { state: 'live' };
+            voice.resumePlayback();
+            paint();
+        };
+        mount.addEventListener('pointerdown', retrySound, true);
+        mount.addEventListener('keydown', retrySound, true);
+
+        // A watched tile's controls cover the picture, so on a touchscreen they come for a
+        // few seconds after a tap rather than on a hover that cannot happen there.
+        mount.addEventListener('pointerdown', (event) => {
+            if (event.pointerType === 'mouse') return;
+            const tile = event.target.closest?.('[data-tile]');
+            if (!tile) return;
+            tile.classList.add('touched');
+            clearTimeout(Number(tile.dataset.touchTimer));
+            tile.dataset.touchTimer = String(setTimeout(() => tile.classList.remove('touched'), TILE_CONTROLS_MS));
+        });
+
+        mount.addEventListener('dblclick', (event) => {
+            const holder = event.target.closest?.('[data-tile]');
+            if (!holder) return;
+            if (document.fullscreenElement === holder) {
+                document.exitFullscreen().catch(() => { /* already leaving */ });
+            } else {
+                holder.requestFullscreen?.().catch(() => { /* denied is fine */ });
+            }
+        });
+
+        wirePushToTalk();
+        unwirePushToMute = wirePushToMute();
+        peerActions = createPeerActions({
+            mount,
+            state,
+            voice,
+            link,
+            canMove: () => canMovePeople,
+            canModerate: () => canModeratePeople,
+            isPriority: (person) => starred().has(person.id),
+            togglePriority,
+            paint,
+        });
+        $('.app-shell', mount)?.toggleAttribute('data-can-move', canMovePeople);
+
+        input?.addEventListener('paste', onComposerPaste);
+        input?.addEventListener('input', updateMention);
+        input?.addEventListener('click', updateMention);
+        input?.addEventListener('keyup', (event) => {
+            if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) updateMention();
+        });
+        input?.addEventListener('blur', () => {
+            // Give a popover mousedown its moment before withdrawing the offer.
+            setTimeout(() => {
+                mention = null;
+                paintMentionPop();
+                commandOffer = null;
+                paintCommandPop();
+            }, 120);
+        });
+
+        // Grow with the text, up to a point, so a long message is visible while it is typed.
+        input?.addEventListener('input', () => {
+            input.style.height = 'auto';
+            input.style.height = `${Math.min(input.scrollHeight, 160)}px`;
+        });
+
+        // Typing pings: throttled to one per 5s of ACTIVE typing (the server relays at
+        // most every 4s regardless), never for an emptied composer, and reset on send so
+        // the next message starts a fresh window.
+        let typingSentAt = 0;
+        input?.addEventListener('input', () => {
+            if (!input.value.trim()) return;
+            const now = Date.now();
+            if (now - typingSentAt < 5000) return;
+            typingSentAt = now;
+            if (state.raw.activeDmId) {
+                link.send('dm:typing', { threadId: state.raw.activeDmId });
+            } else {
+                const channelId = state.raw.viewChannelId ?? state.raw.currentChannelId;
+                if (channelId) link.send('text-chat:typing', { channelId });
+            }
+        });
+    }
+
+    /**
+     * Push to talk.
+     *
+     * Bound on the window with capture, so it works wherever focus happens to be — except
+     * while typing, because a push-to-talk key bound to Space would otherwise make the
+     * composer unusable. That exception is the whole reason this is not three lines.
+     *
+     * `event.code` is the physical key, so a bind survives a keyboard-layout change.
+     * `event.repeat` is ignored: holding a key fires keydown continuously, and sending an
+     * unmute frame per repeat would hammer the server for the entire time somebody speaks.
+     */
+    /* ── mention autocomplete ────────────────────────────────────────────── */
+
+    // Which token is being completed, and which row is highlighted. Null when closed.
+    let mention = null;
+
+    function paintMentionPop() {
+        const wrap = $('.composer-wrap', mount);
+        if (!wrap) return;
+        let pop = $('#mentionPop', mount);
+
+        if (!mention || !mention.items.length) {
+            pop?.remove();
+            return;
+        }
+        if (!pop) {
+            pop = document.createElement('div');
+            pop.id = 'mentionPop';
+            pop.className = 'mention-pop';
+            wrap.append(pop);
+        }
+        pop.innerHTML = mention.items.map((p, i) => `
+            <button type="button" class="mention-row${i === mention.index ? ' current' : ''}"
+                    data-mention="${esc(p.username)}">
+              ${avatar(p, { size: 'sm', presence: false })}
+              <span class="mention-name">${esc(p.displayName ?? p.username)}</span>
+              <span class="mention-user">@${esc(p.username)}</span>
+            </button>`).join('');
+
+        // pointerdown, not click: click fires after the input's blur has already closed
+        // the popover, and the pick would be lost. Not mousedown either, which is what this
+        // was: on a touchscreen that is a compatibility event sent after the finger LIFTS,
+        // by which time the keyboard dismissal has blurred the input and taken the list.
+        pop.querySelectorAll('[data-mention]').forEach((row) => {
+            row.addEventListener('pointerdown', (event) => {
+                event.preventDefault();
+                pickMention(row.dataset.mention);
+            });
+        });
+    }
+
+    function updateMention() {
+        const input = $('#composerInput', mount);
+        if (!input) return;
+        // A slash at the start is a command being named, never a mention — and the two
+        // popovers must not both claim Enter.
+        if (updateCommandOffer(input)) {
+            if (mention) { mention = null; paintMentionPop(); }
+            return;
+        }
+        const found = mentionQuery(input.value, input.selectionStart ?? input.value.length);
+        if (!found) { mention = null; paintMentionPop(); return; }
+
+        const view = state.toShell();
+        const items = matchMentions(found.query, view.people, {
+            roomId: view.room.id,
+            exclude: view.me.username,
+        });
+        // Keep the highlight on the same row across keystrokes when possible.
+        const keep = mention?.items[mention.index]?.username;
+        const index = Math.max(0, items.findIndex((p) => p.username === keep));
+        mention = { ...found, items, index };
+        paintMentionPop();
+    }
+
+    function pickMention(username) {
+        const input = $('#composerInput', mount);
+        if (!input || !mention) return;
+        const caret = input.selectionStart ?? input.value.length;
+        const next = insertMention(input.value, mention.start, caret, username);
+        input.value = next.text;
+        input.setSelectionRange(next.caret, next.caret);
+        mention = null;
+        paintMentionPop();
+        input.focus();
+    }
+
+    /* ── slash command offer ─────────────────────────────────────────────── */
+
+    // The commands a leading slash could mean, and which row is highlighted. Null when closed.
+    let commandOffer = null;
+
+    /** Returns whether the caret is in a command name at all, offered or not. */
+    function updateCommandOffer(input) {
+        const found = canCommand && slashCommands.length && !state.raw.activeDmId
+            ? commandQuery(input.value, input.selectionStart ?? input.value.length)
+            : null;
+        if (!found) {
+            if (commandOffer) { commandOffer = null; paintCommandPop(); }
+            return false;
+        }
+        const items = matchCommands(found.query, slashCommands);
+        const keep = commandOffer?.items[commandOffer.index]?.name;
+        commandOffer = items.length
+            ? { items, index: Math.max(0, items.findIndex((c) => c.name === keep)) }
+            : null;
+        paintCommandPop();
+        return true;
+    }
+
+    function paintCommandPop() {
+        const wrap = $('.composer-wrap', mount);
+        let pop = $('#commandPop', mount);
+        if (!wrap || !commandOffer?.items.length) {
+            pop?.remove();
+            return;
+        }
+        if (!pop) {
+            pop = document.createElement('div');
+            pop.id = 'commandPop';
+            pop.className = 'mention-pop command-pop';
+            wrap.append(pop);
+        }
+        pop.innerHTML = commandOffer.items.map((c, i) => `
+            <button type="button" class="mention-row${i === commandOffer.index ? ' current' : ''}"
+                    data-command="${esc(c.name)}">
+              <span class="mention-name">${esc(c.usage ?? `/${c.name}`)}</span>
+              <span class="mention-user">${esc(c.describe ?? '')}</span>
+            </button>`).join('');
+        // pointerdown for the same reason as the mention rows: click lands after blur.
+        pop.querySelectorAll('[data-command]').forEach((row) => {
+            row.addEventListener('pointerdown', (event) => {
+                event.preventDefault();
+                pickCommand(row.dataset.command);
+            });
+        });
+    }
+
+    function pickCommand(name) {
+        const input = $('#composerInput', mount);
+        if (!input) return;
+        const next = completeCommand(input.value, input.selectionStart ?? input.value.length, name);
+        input.value = next.text;
+        input.setSelectionRange(next.caret, next.caret);
+        commandOffer = null;
+        paintCommandPop();
+        input.focus();
+    }
+
+    /* ── reading without standing ────────────────────────────────────────── */
+
+    function openTextChannel(id) {
+        state.setView(id);
+        loadHistory(id).then(() => ackRead(id)).catch(() => {});
+        paint();
+    }
+
+    async function openDm(threadId) {
+        state.openDm(threadId);
+        // Every way into a thread — a rail tile, the new-message picker, answering a call —
+        // means looking at it, and on a phone the drawer would be standing in front of it.
+        setDrawer(false);
+        paint();
+        try {
+            const reply = await api.request('GET', `/api/dm/threads/${encodeURIComponent(threadId)}/messages?limit=50`);
+            state.setDmMessages(threadId, reply.messages ?? []);
+            ackDmRead(threadId);
+        } catch { /* the thread renders empty; sending still works */ }
+        paint();
+    }
+
+    function ackDmRead(threadId) {
+        const list = state.raw.dmMessages.get(threadId) ?? [];
+        const newest = list.at(-1);
+        state.clearDmUnread(threadId);
+        if (!newest?.id) return;
+        link.send('dm:read', { threadId, createdAt: newest.createdAt, id: newest.id });
+    }
+
+    let ackTimer = 0;
+
+    /** Tell the server the newest message here has been seen, account-wide. */
+    function ackRead(channelId) {
+        const list = state.raw.messages.get(channelId) ?? [];
+        const newest = list.at(-1);
+        if (!newest?.id) { state.clearUnread(channelId); return; }
+        clearTimeout(ackTimer);
+        ackTimer = setTimeout(() => {
+            link.send('text-chat:read', {
+                channelId, createdAt: newest.createdAt, id: newest.id,
+            });
+        }, 400);
+        state.clearUnread(channelId);
+    }
+
+    /** Whether the reader is actually following the timeline right now. */
+    function readingNow(channelId) {
+        const viewId = state.raw.viewChannelId ?? state.raw.currentChannelId;
+        if (channelId !== viewId) return false;
+        if (document.visibilityState === 'hidden') return false;
+        const scroller = $('#timeline', mount);
+        if (!scroller) return false;
+        return scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < STICK_PX;
+    }
+
+    /* ── starting a new DM ───────────────────────────────────────────────── */
+
+    function toggleDmSearch() {
+        const existing = $('#dmSearch', mount);
+        if (existing) { existing.remove(); return; }
+
+        const panel = document.createElement('div');
+        panel.id = 'dmSearch';
+        panel.className = 'dm-search';
+        panel.innerHTML = dmSearchView();
+        mount.append(panel);
+
+        const input = panel.querySelector('#dmSearchInput');
+        const list = panel.querySelector('#dmSearchList');
+
+        const paintList = () => {
+            const q = input.value.trim().toLowerCase();
+            const me = state.raw.me?.username;
+            const options = state.toShell().people
+                .filter((p) => p.username && p.username !== me)
+                .filter((p) => !q
+                    || p.username.toLowerCase().includes(q)
+                    || (p.displayName ?? '').toLowerCase().includes(q))
+                .slice(0, 12);
+            list.innerHTML = dmSearchResults(options);
+
+            list.querySelectorAll('[data-dm-person]').forEach((row) => {
+                row.addEventListener('click', async () => {
+                    panel.remove();
+                    try {
+                        const { thread } = await api.request('POST', '/api/dm/threads', {
+                            body: { userId: row.dataset.dmPerson },
+                        });
+                        const { threads = [] } = await api.request('GET', '/api/dm/threads');
+                        state.setDmThreads(threads);
+                        openDm(thread.id);
+                    } catch { /* the rail is unchanged; nothing was promised */ }
+                });
+            });
+        };
+
+        input.addEventListener('input', paintList);
+        panel.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape') panel.remove();
+        });
+        paintList();
+        input.focus();
+    }
+
+    /** Add someone to the private room being viewed. Members only; the server re-checks. */
+    async function toggleMemberPicker() {
+        const existing = $('#memberPicker', mount);
+        if (existing) { existing.remove(); return; }
+        const roomId = state.toShell().room.id;
+        if (!roomId) return;
+
+        let already = new Set();
+        try {
+            const { members = [] } = await api.request('GET', `/api/channels/${encodeURIComponent(roomId)}/members`);
+            already = new Set(members.map((m) => m.id));
+        } catch { return; /* not a member after all; the server said so */ }
+
+        const panel = document.createElement('div');
+        panel.id = 'memberPicker';
+        panel.className = 'dm-search member-picker';
+        panel.innerHTML = dmSearchView();
+        mount.append(panel);
+        panel.querySelector('.dm-search-title').textContent = 'Add people';
+
+        const input = panel.querySelector('#dmSearchInput');
+        const list = panel.querySelector('#dmSearchList');
+        const paintList = () => {
+            const q = input.value.trim().toLowerCase();
+            const options = state.toShell().people
+                .filter((p) => p.username && !already.has(p.id))
+                .filter((p) => !q
+                    || p.username.toLowerCase().includes(q)
+                    || (p.displayName ?? '').toLowerCase().includes(q))
+                .slice(0, 12);
+            list.innerHTML = dmSearchResults(options);
+            list.querySelectorAll('[data-dm-person]').forEach((row) => {
+                row.addEventListener('click', async () => {
+                    try {
+                        await api.request('POST', `/api/channels/${encodeURIComponent(roomId)}/members`, {
+                            body: { userId: row.dataset.dmPerson },
+                        });
+                        already.add(row.dataset.dmPerson);
+                        paintList();
+                    } catch { /* the server refused; the row simply stays */ }
+                });
+            });
+        };
+        input.addEventListener('input', paintList);
+        panel.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape') panel.remove();
+        });
+        paintList();
+        input.focus();
+    }
+
+    /* ── incoming calls ──────────────────────────────────────────────────── */
+
+    function showRing({ threadId, from }) {
+        ringModal?.close();
+        ringModal = createModal({
+            className: 'ring-modal',
+            label: 'Incoming call',
+            onClose: () => { ringModal = null; },
+        });
+        const name = from?.displayName || from?.username || 'Someone';
+        ringModal.open({
+            content: `
+              <div class="ring-card">
+                <p class="ring-name">${esc(name)}</p>
+                <p class="ring-sub">is calling you privately</p>
+                <div class="ring-actions">
+                  <button type="button" class="btn primary" data-ring-accept>Accept</button>
+                  <button type="button" class="btn" data-ring-decline>Decline</button>
+                </div>
+              </div>`,
+        });
+        ringModal.element.addEventListener('click', (event) => {
+            if (event.target.closest('[data-ring-accept]')) {
+                activeCallThreadId = threadId;
+                link.send('dm:accept', { threadId });
+                if (state.raw.dms.some((t) => t.id === threadId)) openDm(threadId);
+                ringModal?.close();
+            } else if (event.target.closest('[data-ring-decline]')) {
+                link.send('dm:decline', { threadId });
+                ringModal?.close();
+            }
+        });
+    }
+
+    /* ── the desktop share picker ────────────────────────────────────────── */
+
+    // The main process holds a pending capture request while this modal is open; every
+    // exit path MUST answer it, or the request only dies by its own timeout.
+    platform.share.onPick(({ nonce, sources }) => {
+        let answered = false;
+        const modal = createModal({
+            className: 'share-modal',
+            label: 'Share your screen',
+            onClose: () => {
+                if (!answered) { answered = true; platform.share.answer(nonce, {}); }
+            },
+        });
+        modal.open({ content: sharePickerView({ sources }) });
+
+        modal.element.addEventListener('click', (event) => {
+            const source = event.target.closest('[data-share-source]');
+            if (source) {
+                answered = true;
+                const wantAudio = modal.element.querySelector('#shareAudio')?.checked ?? true;
+                lastShareSource = { id: source.dataset.shareSource, audio: wantAudio };
+                platform.share.answer(nonce, { id: source.dataset.shareSource, audio: wantAudio });
+                modal.close();
+                return;
+            }
+            if (event.target.closest('[data-share-cancel]')) modal.close();
+        });
+    });
+
+    /** The narrow-window drawer: the sidebar, floating over the room. */
+    function setDrawer(open) {
+        $('.app-shell', mount)?.classList.toggle('drawer-open', Boolean(open));
+    }
+
+    /** Whether a typed character, rather than a shortcut, is what this key press is for. */
+    const isTyping = (target) => target instanceof HTMLElement
+        && (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName));
+
+    function wirePushToTalk() {
+        const setTalking = (talking) => {
+            if (!prefs.pushToTalk || pttHeld === talking) return;
+            pttHeld = talking;
+            const me = state.toShell().me;
+            const deafened = Boolean(me.deafened);
+            const muted = effectiveMute({
+                pushToTalk: true, held: talking, deafened, forceMuted: Boolean(me.forceMuted),
+            });
+            voice.setMuted(muted);
+            link.send('setMute', { muted, deafened });
+            // The button lights while it is held, whichever way it was pressed.
+            paint();
+        };
+
+        // On a touchscreen the button IS the key. Down on the button, up ANYWHERE: the self
+        // bar repaints while the room hears you, which replaces the very button under the
+        // finger, so a release listened for on the button would never arrive and the
+        // microphone would stay open until something else closed it.
+        mount.addEventListener('pointerdown', (event) => {
+            const hold = event.target.closest?.('[data-hold-to-talk]');
+            if (!hold || (event.pointerType === 'mouse' && event.button !== 0)) return;
+            event.preventDefault();
+            setTalking(true);
+            const release = () => {
+                window.removeEventListener('pointerup', release);
+                window.removeEventListener('pointercancel', release);
+                setTalking(false);
+            };
+            window.addEventListener('pointerup', release);
+            window.addEventListener('pointercancel', release);
+        });
+        // A long hold is exactly what raises Android's own press menu; it must not here.
+        mount.addEventListener('contextmenu', (event) => {
+            if (event.target.closest?.('[data-hold-to-talk]')) event.preventDefault();
+        });
+
+        window.addEventListener('keydown', (event) => {
+            if (!prefs.pushToTalk || event.repeat) return;
+            if (event.code !== prefs.pushToTalkKey || isTyping(event.target)) return;
+            event.preventDefault();
+            setTalking(true);
+        }, true);
+
+        window.addEventListener('keyup', (event) => {
+            if (!prefs.pushToTalk || event.code !== prefs.pushToTalkKey) return;
+            setTalking(false);
+        }, true);
+
+        // Releasing the key while the window is not focused never reaches us, so a peer
+        // would be left permanently unmuted after alt-tabbing mid-sentence.
+        window.addEventListener('blur', () => setTalking(false));
+    }
+
+    /**
+     * The mute button, on a key that works with Weave out of sight — and a sound saying
+     * which way it went, because with Weave out of sight the sound is all there is.
+     *
+     * The UI is updated here rather than on the server's answer, which is the other thing
+     * the button does not do. Two quick presses would otherwise both read the state from
+     * before the first one, and send "mute" twice with two mute sounds. The server's
+     * muteChanged still arrives and has the last word.
+     */
+    function togglePushToMute() {
+        // A press already on its way when the setting was switched off.
+        if (!prefs.pushToMute) return;
+        const me = state.toShell().me;
+        const action = pushToMuteAction({
+            pushToTalk: Boolean(prefs.pushToTalk),
+            muted: Boolean(me.muted),
+            deafened: Boolean(me.deafened),
+            forceMuted: Boolean(me.forceMuted),
+        });
+        if (!action) return;
+        state.apply({ type: 'muteChanged', muted: action.muted, deafened: false });
+        paint();
+        voice.setMuted(action.muted);
+        link.send('setMute', { muted: action.muted, deafened: false });
+        playBundledCue(action.cue);
+    }
+
+    /**
+     * Hand the push-to-mute shortcut to the operating system, or take it back.
+     *
+     * Held only while it would do something. Under push-to-talk the shortcut is inert, and a
+     * global shortcut that does nothing still takes its key from every other program on the
+     * machine. Settings pauses it while a new one is chosen; see createSettings.
+     *
+     * Never rejects: the answer is a status for settings to show, not an error to handle.
+     */
+    async function syncPushToMute() {
+        if (!platform.hotkeys.available) return pushToMuteStatus;
+        const wanted = prefs.pushToMute && !prefs.pushToTalk && !pushToMutePaused
+            ? acceleratorFor(prefs.pushToMuteKey)
+            : null;
+        try {
+            pushToMuteStatus = await platform.hotkeys.set('pushToMute', wanted);
+        } catch (err) {
+            pushToMuteStatus = { ok: false, error: 'invalid' };
+            platform.log('warn', `[hotkey] push-to-mute could not be set: ${err?.message ?? err}`);
+        }
+        if (wanted && !pushToMuteStatus?.ok) {
+            platform.log('warn', `[hotkey] push-to-mute ${wanted} refused (${pushToMuteStatus?.error})`);
+        } else if (wanted) {
+            platform.log('info', `[hotkey] push-to-mute on ${wanted}`);
+        }
+        return pushToMuteStatus;
+    }
+
+    /**
+     * Listen for the push-to-mute shortcut.
+     *
+     * In the desktop app the operating system delivers it, from any program. A browser tab
+     * cannot hear keys pressed anywhere else, so there it listens for itself — exactly as
+     * push-to-talk does, and with the same rule about text being typed.
+     */
+    function wirePushToMute() {
+        if (platform.hotkeys.available) {
+            const off = platform.hotkeys.onPress(({ name }) => {
+                if (name === 'pushToMute') togglePushToMute();
+            });
+            syncPushToMute();
+            return off;
+        }
+        const onKey = (event) => {
+            if (!prefs.pushToMute || pushToMutePaused || event.repeat) return;
+            if (!matchesKeydown(event, prefs.pushToMuteKey) || isTyping(event.target)) return;
+            event.preventDefault();
+            togglePushToMute();
+        };
+        window.addEventListener('keydown', onKey, true);
+        return () => window.removeEventListener('keydown', onKey, true);
+    }
+
+    function sendMessage() {
+        const input = $('#composerInput', mount);
+        const body = input?.value.trim() ?? '';
+        const attachment = pendingAttachment
+            ? { id: pendingAttachment.id, mime: pendingAttachment.mime,
+                bytes: pendingAttachment.bytes, name: pendingAttachment.name }
+            : null;
+        if (!body && !attachment) return;
+        mention = null;
+        paintMentionPop();
+        msgNoise.record(Date.now());
+
+        // Cleared immediately. Waiting for the server to acknowledge before clearing means
+        // that on a slow link people retype, or send twice.
+        input.value = '';
+        input.style.height = 'auto';
+        pendingAttachment = null;
+        paintAttachStrip();
+        closeEmojiPop();
+        commandOffer = null;
+        paintCommandPop();
+
+        // A command is its own request, not a message: the server answers it with a
+        // result line for the channel rather than storing what was typed. Not in a DM,
+        // where there is no room to announce a roll to, and not with a picture attached,
+        // which only a message can carry.
+        const command = !state.raw.activeDmId && !attachment ? parseCommand(body, slashCommands) : null;
+        if (command) {
+            const channelId = state.raw.viewChannelId ?? state.raw.currentChannelId;
+            pendingCommand = { at: Date.now(), channelId };
+            link.send('slash-commands:run', { ...command, ...(channelId ? { channelId } : {}) });
+            return;
+        }
+
+        if (state.raw.activeDmId) {
+            link.send('dm:send', { threadId: state.raw.activeDmId, body, ...(attachment ? { attachment } : {}) });
+        } else if (!(state.raw.viewChannelId ?? state.raw.currentChannelId)) {
+            return;   // standing nowhere, viewing nothing: there is no "here" to message
+        } else {
+            link.send('text-chat:send', {
+                channelId: state.raw.viewChannelId ?? state.raw.currentChannelId,
+                body,
+                ...(attachment ? { attachment } : {}),
+            });
+        }
+    }
+
+    /* ── lifecycle ───────────────────────────────────────────────────────── */
+
+    async function start() {
+        mount.innerHTML = '';
+        const view = state.toShell();
+        mount.append(html(shell({
+            ...view,
+            me: { ...view.me, pttOn: Boolean(prefs.pushToTalk) },
+            voice: voiceState,
+        })));
+        wire();
+        if (canBubble) {
+            bubbleRoom = createBubbles({
+                mount,
+                api,
+                link,
+                photos: bubblePhotos,
+                getMe: () => state.raw.me,
+                getUsers: () => state.raw.users,
+                // Faces beside a bubble's messages, resolved the same way the timeline's are.
+                withFaces: (items) => items.map((item) => (item.kind === 'message' && !item.continued && item.author?.avatar
+                    ? { ...item, author: { ...item.author, avatarUrl: avatarCache.urlFor(item.author.avatar) } }
+                    : item)),
+                hydrate: hydrateAuthImages,
+                createModal,
+                onChange: paintBubblesButton,
+            });
+        }
+        startBackground();
+        mountLoom();
+
+        state.subscribe(paint);
+
+        link.onEvent = applyFrame;
+        let linkWas = link.state;
+        link.onState = (conn) => {
+            // Into the app log, so the next report of "it kept disconnecting" carries the
+            // disconnects — what closed, how, and whether the server kept us. See describeLink.
+            const line = describeLink(conn, linkWas);
+            if (line) platform.log(line.level, `[link] ${line.message}`);
+            linkWas = conn?.state ?? linkWas;
+            state.setConnection(conn);
+            // An administrator ended this session — kicked, banned, or wiped the server.
+            // Staying in a dead room with a spinner would be dishonest; walk back to the
+            // sign-in screen carrying the reason.
+            const adminEnd = ['password_reset', 'access_revoked', 'server_wiped', 'unauthenticated'];
+            if (conn?.state === 'failed' && adminEnd.includes(conn?.failure?.code)) {
+                signedOutBy(conn.failure);
+            }
+        };
+        state.setConnection({ state: link.state, rttMs: link.rttMs, cid: link.cid });
+
+        // The roster and the room list come over HTTP; who is in them comes over the socket.
+        const [channels, users] = await Promise.all([
+            api.channels().catch(() => ({ channels: [] })),
+            api.request('GET', '/api/users').catch(() => ({ users: [] })),
+        ]);
+        state.setChannels(channels.channels ?? []);
+        state.setUsers(users.users ?? []);
+        // The commands are fixed for the life of the server process, so once is enough.
+        // A failure leaves the list empty, which is exactly a server without them.
+        if (canCommand) {
+            api.request('GET', '/api/commands')
+                .then(({ commands = [] }) => { slashCommands = commands; })
+                .catch(() => {});
+        }
+
+        if (state.raw.currentChannelId) await loadHistory(state.raw.currentChannelId);
+        paint();
+    }
+
+    return {
+        start,
+        get state() { return state; },
+
+        /**
+         * Whether this person is watching a stream right now.
+         *
+         * The one form of "present but not touching anything" Weave can actually see. OS
+         * idle time cannot tell an empty chair from somebody an hour into a screen share,
+         * and for a video playing in another application nothing can — but when the stream
+         * is being consumed HERE, we know.
+         *
+         * A watched tile rather than merely a visible one: a placeholder nobody asked for,
+         * or your own camera's mirror, is not evidence of anything. The visibility check
+         * keeps a minimised window from claiming attention it does not have.
+         */
+        isWatchingVideo() {
+            if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return false;
+            return [...videoStreams.keys()].some((key) => !key.startsWith('self:') || watchingSelf.has(key));
+        },
+
+        destroy() {
+            document.removeEventListener('fullscreenchange', onFullscreenChange);
+            clearTimeout(fullscreenHoldTimer);
+            clearInterval(syncTimer);
+            clearInterval(statsTimer);
+            clearInterval(streamDiagTimer);
+            // Signed out: the shortcut goes back to every other program, and a press that
+            // arrives on the way out has nothing left to mute.
+            unwirePushToMute();
+            if (platform.hotkeys.available) platform.hotkeys.set('pushToMute', null).catch(() => {});
+            voice.stop();
+            background?.destroy();
+            loom?.destroy();
+            bubbleRoom?.destroy();
+            bubblePhotos.destroy();
+            link.onEvent = () => {};
+            link.onState = () => {};
+        },
+    };
+}

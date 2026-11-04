@@ -1,0 +1,17 @@
+/* Weave client stylesheet.
+ *
+ * Hand-written, no framework. Four layers, loaded in dependency order:
+ *
+ *   tokens   the design system - every colour, space, radius and z-index
+ *   base     reset, typography, the global focus ring
+ *   auth     the sign-in surface: one card on a quiet field
+ *   shell    the application: four columns, a title bar, nothing that scrolls the page
+ *
+ * Nothing below tokens may contain a raw hex code, a raw pixel gap or a raw z-index. If a
+ * component needs a value that is not in tokens.css, the token set is missing something.
+ */
+
+@import "./styles/tokens.css";
+@import "./styles/base.css";
+@import "./styles/auth.css";
+@import "./styles/shell.css";

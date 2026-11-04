@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Weave — shell harness</title>
+</head>
+<body>
+<div id="app"></div>
+
+<script type="module">
+// The shell, rendered from fixtures. Development only; vite bundles index.html alone.
+//
+//   ?fixture=voice           in a room: every dock control, and stage tiles
+//   ?fixture=voice-ptt       the same, with push-to-talk on (the hold-to-talk button)
+//   ?fixture=admin           an administrator's menu on somebody (a sheet on a phone)
+//   ?fixture=settings        settings on its section list
+//   ?fixture=settings-panel  settings on one section
+import '../src/styles.css';
+import { shell } from '../src/room/shell.js';
+import { stageView } from '../src/room/views/stage.js';
+import { peerMenu } from '../src/room/views/peer-menu.js';
+import { settingsFrame, voicePanel } from '../src/settings/panels.js';
+import { html } from '../src/ui/dom.js';
+import { WeaveBackground } from '../src/ui/weave-background.js';
+import { userHue } from '../src/ui/hue.js';
+import { fixture } from './fixtures.js';
+
+const name = new URLSearchParams(location.search).get('fixture') ?? '';
+const state = fixture(name);
+const narrow = () => window.matchMedia('(max-width: 480px)').matches;
+
+const app = document.getElementById('app');
+app.innerHTML = '';
+app.append(html(shell(state)));
+
+// What the room controller would do once it knew where you stood.
+if (state.mediaButtons) {
+    for (const id of ['camBtn', 'screenBtn']) document.getElementById(id).hidden = false;
+}
+if (state.tiles) document.getElementById('stageSlot').innerHTML = stageView({ tiles: state.tiles });
+
+// The drawer has no controller here; the harness opens and closes it itself.
+const shellEl = app.querySelector('.app-shell');
+document.addEventListener('click', (event) => {
+    if (event.target.closest('[data-open-drawer]')) shellEl.classList.toggle('drawer-open');
+    else if (event.target.closest('[data-drawer-scrim]')) shellEl.classList.remove('drawer-open');
+});
+
+if (state.menu) {
+    const menu = html(peerMenu(state.menu));
+    if (narrow()) menu.classList.add('as-sheet');
+    else Object.assign(menu.style, { left: '120px', top: '420px' });
+    app.append(menu);
+}
+
+if (state.settings) {
+    const dialog = document.createElement('dialog');
+    dialog.className = 'modal settings-modal';
+    dialog.innerHTML = settingsFrame({
+        me: { username: 'ghostbyte', displayName: 'Ghostbyte', isAdmin: true },
+        current: state.settings.current,
+        pane: state.settings.pane,
+        serverName: 'Home Weave',
+        body: voicePanel({ prefs: { pushToTalk: true } }),
+    });
+    document.body.append(dialog);
+    dialog.showModal();
+}
+
+// The living background, fed by whoever is in the current room.
+const here = state.rooms.find((r) => r.current)?.occupants ?? [];
+const bg = new WeaveBackground(document.getElementById('roomBg'), {
+    getState: () => ({
+        participants: here.map((p) => ({ id: p.username, hue: userHue(p.username) })),
+        noise: Number(document.getElementById('noise')?.value ?? 25) / 100,
+    }),
+});
+bg.start();
+
+// A small overlay for poking at the things that are hard to see in a static render. Up in
+// the title bar's empty middle, where it covers nothing the layout is being judged on.
+const tools = document.createElement('div');
+tools.style.cssText = `position:fixed;top:6px;left:50%;transform:translateX(-50%);z-index:900;display:flex;
+  gap:10px;align-items:center;background:var(--surface-4);border:1px solid var(--line);border-radius:var(--r-3);
+  padding:4px 10px;font:11px var(--font-sans);color:var(--ink-dim);box-shadow:var(--shadow-2)`;
+tools.innerHTML = `
+  <label style="display:flex;gap:6px;align-items:center">noise
+    <input id="noise" type="range" min="0" max="100" value="25" style="width:60px"></label>
+  <span id="metrics" style="font-family:var(--font-mono)"></span>`;
+document.body.append(tools);
+
+let frames = 0;
+let mark = performance.now();
+(function tick(now) {
+    frames++;
+    if (now - mark >= 1000) {
+        const doc = document.documentElement;
+        document.getElementById('metrics').textContent =
+            `${frames} fps · ${doc.scrollWidth}x${doc.clientWidth}`;
+        frames = 0; mark = now;
+    }
+    requestAnimationFrame(tick);
+})(performance.now());
+</script>
+</body>
+</html>

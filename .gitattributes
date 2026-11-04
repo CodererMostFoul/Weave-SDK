@@ -1,0 +1,10 @@
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff2 binary
+*.ogg binary
+# Gradle's Windows launcher is a batch file, and cmd misreads labels in one with LF endings.
+*.bat text eol=crlf
+*.jar binary
+*.webp binary

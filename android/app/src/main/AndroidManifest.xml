@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+      allowBackup is off because the only data worth backing up is sessions and saved
+      sign-ins, and both are encrypted under a Keystore key that never leaves this phone: a
+      restored copy could not be read anyway. Anything that does arrive by device transfer
+      reads as "nothing saved" (SecretStore), and the person signs in again.
+
+      The network security config allows plain http and ws, because a self-hosted server on
+      a home network usually has no certificate. The page itself is still a secure context
+      (http://localhost), which is what the microphone requires.
+    -->
+    <application
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="${appLabel}"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:theme="@style/AppTheme">
+
+        <!--
+          configChanges lists everything the page can absorb itself. Without an entry Android
+          destroys and recreates the activity — and with it the WebView and the call — on a
+          rotation, a dark-mode switch or a font-size change.
+        -->
+        <activity
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode|navigation|density|fontScale|layoutDirection"
+            android:name=".MainActivity"
+            android:label="${appLabel}"
+            android:theme="@style/AppTheme.NoActionBarLaunch"
+            android:launchMode="singleTask"
+            android:exported="true">
+
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!-- Invite links: weave://join?server=…&code=… opens Register with the code filled in. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="weave" android:host="join" />
+            </intent-filter>
+
+        </activity>
+
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths"></meta-data>
+        </provider>
+    </application>
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Network events, so a reconnect starts when the phone changes networks. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- Chromium sets the call audio mode (and with it echo cancellation) through this. -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.CAMERA" />
+
+    <!-- Asked for, never required: a phone without a camera can still talk. -->
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
+</manifest>

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The icon's ground: the accent gradient, light at the top left, as on the desktop icon. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <gradient
+        android:angle="315"
+        android:startColor="@color/weave_accent_hi"
+        android:endColor="@color/weave_accent_deep" />
+</shape>
