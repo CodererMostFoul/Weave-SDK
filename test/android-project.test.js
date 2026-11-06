@@ -164,3 +164,17 @@ test('the launcher icon is drawn in the design system\'s colours, with the brand
     assert.match(icon, /<monochrome /, 'themed icons on Android 13 need a monochrome layer');
     assert.doesNotMatch(read(`${res}/values/styles.xml`), /@drawable\/splash/, 'no template splash image');
 });
+
+test('a chosen file reaches the page as the app\'s own copy, not a link into another app', () => {
+    // On newer Android the WebView re-checks a content:// link every time the file is read,
+    // and gallery and photo-picker providers refuse the second look: uploads failed with
+    // "Failed to fetch", and reading up front with "could not be read". Copied into the app's
+    // cache when chosen, the picture no longer depends on the app it came from.
+    const chrome = read('android/app/src/main/java/io/github/weavespeak/client/WeaveChromeClient.kt');
+    assert.match(chrome, /override fun onShowFileChooser\(/, 'the chooser is ours, not Capacitor\'s');
+    assert.match(chrome, /File\(context\.cacheDir, "picked"\)/, 'copies go to the app\'s private cache');
+    assert.match(chrome, /Uri\.fromFile\(out\)/, 'and the page is handed the copy');
+    assert.match(chrome, /deleteRecursively\(\)/, 'old copies are cleared away');
+    assert.match(chrome, /isCaptureEnabled\) \{\s*return super\.onShowFileChooser/,
+        'taking a photo with the camera stays on Capacitor\'s path');
+});

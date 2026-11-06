@@ -7,6 +7,15 @@ All notable changes to Weave Client are recorded here. The format follows
 The newest entries are what the app shows under **What's new** after it updates, so they are
 written for the people using it rather than for the people building it.
 
+## [0.1.75] - 2026-11-06
+
+### Fixed
+- **Pictures from your phone's gallery, for real this time.** On newer Android phones a
+  picture chosen from the gallery could still not be sent: 0.1.74 showed "That picture could
+  not be read from this device". The app now keeps its own copy of the picture the moment you
+  choose it, so the photo app can no longer refuse halfway through. The copy stays inside the
+  app and is deleted within the hour.
+
 ## [0.1.74] - 2026-11-04
 
 ### Fixed
