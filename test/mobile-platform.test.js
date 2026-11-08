@@ -225,3 +225,16 @@ test('the mobile build selects the mobile adapter, and only the mobile build', a
     assert.equal(browser.isMobile, false);
     assert.equal(browser.platform.target, 'browser');
 });
+
+test("call audio is the bridge's to route, and a browser has nothing to route", async () => {
+    const bare = createMobilePlatform(fakeBase(), null);
+    assert.equal(bare.callAudio.available, false);
+    assert.equal(await bare.callAudio.set(true), null, 'callable all the same');
+
+    const asked = [];
+    const routed = createMobilePlatform(fakeBase(), { callAudio: { set: async (on) => { asked.push(on); return { route: 'speaker' }; } } });
+    assert.equal(routed.callAudio.available, true);
+    assert.deepEqual(await routed.callAudio.set(true), { route: 'speaker' });
+    await routed.callAudio.set(false);
+    assert.deepEqual(asked, [true, false]);
+});

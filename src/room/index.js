@@ -1468,6 +1468,7 @@ export function createRoom({ mount, api, link, user, server, features = [], repo
         }
 
         if (msg.type === 'left') {
+            platform.callAudio?.set(false);
             // Stood down because this account took voice on another device (see the
             // server's standDownOthers). The server has closed this connection's media
             // already; this side lets go of its own, and a reconnect must not walk back
@@ -1561,6 +1562,9 @@ export function createRoom({ mount, api, link, user, server, features = [], repo
             if (msg.channel?.id && state.raw.channels.some((c) => c.id === msg.channel.id)) {
                 lastVoiceRoomId = msg.channel.id;
             }
+            // Standing in a room is being in voice: on Android that moves call audio off the
+            // earpiece and onto the loudspeaker or a headset. Standing nowhere lets it go.
+            platform.callAudio?.set(Boolean(msg.channel));
             if (msg.channel) {
                 if (voiceState.state === 'elsewhere') voiceState = { state: 'idle' };
             } else if (msg.type === 'joined' && msg.elsewhere) {
@@ -3313,6 +3317,7 @@ export function createRoom({ mount, api, link, user, server, features = [], repo
             unwirePushToMute();
             if (platform.hotkeys.available) platform.hotkeys.set('pushToMute', null).catch(() => {});
             voice.stop();
+            platform.callAudio?.set(false);
             background?.destroy();
             loom?.destroy();
             bubbleRoom?.destroy();

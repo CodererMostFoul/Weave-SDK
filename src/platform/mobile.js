@@ -42,6 +42,8 @@ const absent = {
     // Signing straight back in at launch is a phone's habit. Without a native token store
     // there is nothing to sign back in with, so a plain browser never tries.
     session: { resumeOnLaunch: false },
+    // Where call audio plays is the browser's business everywhere but the Android app.
+    callAudio: { available: false, async set() { return null; } },
 };
 
 /**
@@ -130,6 +132,7 @@ export function createMobilePlatform(base, bridge = null, timers = {}) {
         back: offered('back', absent.back),
         lifecycle,
         network: offered('network', absent.network),
+        callAudio: offered('callAudio', absent.callAudio),
         session: bridge?.session ? { ...bridge.session } : absent.session,
 
         log,

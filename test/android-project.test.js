@@ -178,3 +178,26 @@ test('a chosen file reaches the page as the app\'s own copy, not a link into ano
     assert.match(chrome, /isCaptureEnabled\) \{\s*return super\.onShowFileChooser/,
         'taking a photo with the camera stays on Capacitor\'s path');
 });
+
+test('call audio goes to the loudspeaker, unless something is worn, and only while in voice', () => {
+    // In call mode Android plays through the earpiece, which made a room nearly inaudible.
+    const dir = 'android/app/src/main/java/io/github/weavespeak/client';
+    const route = read(`${dir}/AudioRoute.kt`);
+    const preference = /PREFERENCE[^=]*= buildList \{([\s\S]*?)\n {8}\}/.exec(route)[1];
+    const order = [...preference.matchAll(/TYPE_(\w+)/g)].map((m) => m[1]);
+    assert.equal(order.at(-1), 'BUILTIN_SPEAKER', 'the loudspeaker is the default, after anything worn');
+    assert.ok(!order.includes('BUILTIN_EARPIECE'), 'and the earpiece is never chosen');
+    assert.match(route, /if \(audio\.mode != AudioManager\.MODE_IN_COMMUNICATION\)/, 'only during a call');
+    assert.match(route, /registerAudioDeviceCallback/, 'and again when a headset comes or goes');
+    assert.match(route, /audio\.isSpeakerphoneOn = false/, 'a speakerphone is not left on after the call');
+
+    const plugin = read(`${dir}/WeaveNativePlugin.kt`);
+    assert.match(plugin, /fun callAudio\(call: PluginCall\)/);
+    assert.match(plugin, /route\.disengage\(\)/, 'and the plugin lets go when it is destroyed');
+    assert.match(read('android/app/src/main/AndroidManifest.xml'), /android\.permission\.MODIFY_AUDIO_SETTINGS/);
+
+    // The room says when it is in voice; standing nowhere and leaving let the route go.
+    const room = read('src/room/index.js');
+    assert.match(room, /platform\.callAudio\?\.set\(Boolean\(msg\.channel\)\)/);
+    assert.ok((room.match(/platform\.callAudio\?\.set\(false\)/g) ?? []).length >= 2, 'on leaving and on teardown');
+});

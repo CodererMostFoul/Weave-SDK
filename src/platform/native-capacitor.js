@@ -125,6 +125,12 @@ function createBridge() {
 
         writeLog: (lines) => WeaveNative.log({ lines }).catch(() => {}),
 
+        // In voice or not. Android plays call audio through the earpiece unless told
+        // otherwise; while this is on, it goes to a headset or the loudspeaker (AudioRoute.kt).
+        callAudio: {
+            set: (on) => WeaveNative.callAudio({ on: Boolean(on) }).catch(() => null),
+        },
+
         session: { resumeOnLaunch: true },
     };
 }

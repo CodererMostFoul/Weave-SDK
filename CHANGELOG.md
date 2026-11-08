@@ -7,6 +7,15 @@ All notable changes to Weave Client are recorded here. The format follows
 The newest entries are what the app shows under **What's new** after it updates, so they are
 written for the people using it rather than for the people building it.
 
+## [0.1.76] - 2026-11-08
+
+### Fixed
+- **Voice on the loudspeaker.** On a phone, voice played through the earpiece, the quiet
+  speaker you hold to your ear, so a room was barely audible. It now plays through the
+  loudspeaker by default, or through a headset when one is connected, wired or Bluetooth.
+  It switches when you plug one in or take it off, and puts the phone back as it was when
+  you leave the room.
+
 ## [0.1.75] - 2026-11-06
 
 ### Fixed

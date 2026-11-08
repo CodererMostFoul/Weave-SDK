@@ -27,6 +27,9 @@ class WeaveNativePlugin : Plugin() {
 
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
+    // Call audio on the loudspeaker (or a headset) while the page is in voice. See AudioRoute.
+    private val route by lazy { AudioRoute(context) }
+
     override fun load() {
         val connectivity = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         val callback = object : ConnectivityManager.NetworkCallback() {
@@ -39,6 +42,7 @@ class WeaveNativePlugin : Plugin() {
     }
 
     override fun handleOnDestroy() {
+        route.disengage()
         val callback = networkCallback ?: return
         networkCallback = null
         val connectivity = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
@@ -128,6 +132,20 @@ class WeaveNativePlugin : Plugin() {
         val lines = if (array == null) emptyList() else (0 until array.length()).map { array.optString(it) }
         AppLog.append(context, lines)
         call.resolve()
+    }
+
+    /** The page is in voice (on: true) or has left it (on: false). Answers with the route. */
+    @PluginMethod
+    fun callAudio(call: PluginCall) {
+        val on = call.getBoolean("on") ?: false
+        // AudioManager is a main-thread affair, and plugin methods arrive on another thread.
+        bridge.executeOnMainThread {
+            if (on) route.engage() else route.disengage()
+            call.resolve(JSObject().apply {
+                put("route", route.current)
+                put("phone", route.state())
+            })
+        }
     }
 
     @PluginMethod
