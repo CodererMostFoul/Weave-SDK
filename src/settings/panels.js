@@ -473,8 +473,44 @@ function micDeviceOptions(chosen = '', devices = []) {
     ].join('');
 }
 
+/**
+ * The line under a phone's output picker: where call audio is playing, when it is playing.
+ * @param {{ outputs?: {id: string, label: string}[], current?: string, inVoice?: boolean } | null} phone
+ */
+export function phoneOutputNow(phone) {
+    if (!phone?.inVoice) return 'Takes effect while you are in a voice room.';
+    const playing = phone.outputs?.find((o) => o.id === phone.current);
+    if (playing) return `Playing through: ${playing.label}`;
+    return phone.current === 'waiting' ? 'Waiting for the call to start…' : 'Playing through what the phone chose.';
+}
+
+/**
+ * A phone's output picker. A WebView lists no outputs and cannot choose one, so the list is
+ * the native side's (AudioRoute.kt): the loudspeaker, the earpiece, and whatever headset is
+ * connected. Automatic is a headset when one is connected, else the loudspeaker, and a chosen
+ * output that is not connected waits, listed as such, while automatic stands in.
+ */
+function phoneOutputField(prefs, phone) {
+    const chosen = prefs.callOutput ?? '';
+    const list = phone.outputs ?? [];
+    const option = (value, label, selected, extra = '') =>
+        `<option value="${esc(value)}"${extra}${selected ? ' selected' : ''}>${esc(label)}</option>`;
+    const missing = chosen && !list.some((o) => o.id === chosen);
+    return `<div class="field">
+             <label for="callOutput">Output device</label>
+             <select id="callOutput" data-setting="callOutput">
+               ${[
+                   option('', 'Automatic (a headset when connected, otherwise the loudspeaker)', !chosen),
+                   ...(missing ? [option(chosen, 'Chosen output (not connected)', true, ' data-missing')] : []),
+                   ...list.map((o) => option(o.id, o.label, o.id === chosen)),
+               ].join('')}
+             </select>
+             <span class="setting-note" id="phoneOutputNow">${esc(phoneOutputNow(phone))}</span>
+           </div>`;
+}
+
 export function voicePanel({
-    prefs = {}, devices = [], cameras = [], outputs = [], features = [],
+    prefs = {}, devices = [], cameras = [], outputs = [], phoneOutputs = null, features = [],
     hotkeysGlobal = false, pushToMuteStatus = null, micTest = {},
 } = {}) {
     const hasAfk = features.includes('module.afk');
@@ -494,7 +530,7 @@ export function voicePanel({
            </div>`
         : notYet('Input device', 'Device names are only readable once microphone access has been granted.')}
 
-    ${outputs.length
+    ${phoneOutputs ? phoneOutputField(prefs, phoneOutputs) : outputs.length
         ? `<div class="field">
              <label for="audioOutput">Output device</label>
              <select id="audioOutput" data-setting="audioOutput">

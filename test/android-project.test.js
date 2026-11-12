@@ -198,6 +198,37 @@ test('call audio goes to the loudspeaker, unless something is worn, and only whi
 
     // The room says when it is in voice; standing nowhere and leaving let the route go.
     const room = read('src/room/index.js');
-    assert.match(room, /platform\.callAudio\?\.set\(Boolean\(msg\.channel\)\)/);
+    assert.match(room, /platform\.callAudio\?\.set\(Boolean\(msg\.channel\), prefs\.callOutput \?\? ''\)/);
     assert.ok((room.match(/platform\.callAudio\?\.set\(false\)/g) ?? []).length >= 2, 'on leaving and on teardown');
+});
+
+test('a phone lists its own outputs and plays through the one chosen', () => {
+    // The WebView lists no outputs to enumerateDevices() and has no setSinkId(), so the
+    // Settings picker was empty on every phone. The list and the choice are native.
+    const dir = 'android/app/src/main/java/io/github/weavespeak/client';
+    const route = read(`${dir}/AudioRoute.kt`);
+    const plugin = read(`${dir}/WeaveNativePlugin.kt`);
+
+    assert.match(plugin, /fun audioOutputs\(call: PluginCall\)/);
+    assert.match(plugin, /fun chooseAudioOutput\(call: PluginCall\)/);
+    assert.match(plugin, /if \(prefer != null\) route\.prefer\(prefer\)/, 'a room starts on the choice');
+
+    // Every kind somebody might pick, the earpiece included, but that only by choice.
+    for (const type of ['BUILTIN_SPEAKER', 'BUILTIN_EARPIECE', 'WIRED_HEADSET', 'USB_HEADSET', 'BLUETOOTH_SCO', 'BLE_HEADSET', 'HEARING_AID']) {
+        assert.match(route, new RegExp(`AudioDeviceInfo\\.TYPE_${type}\\b`), `${type} is listed`);
+    }
+    // The choice first when it is connected, else what automatic picks, as with a microphone.
+    assert.match(route, /val want = chosen\s*\n\s*\?: PREFERENCE\.firstNotNullOfOrNull/);
+    // The stored id must survive a reconnect, which Android's own device id does not.
+    assert.ok(!/Output\(\s*device\.id/.test(route), "remembered by kind and name, not by Android's id");
+    // Before Android 12 a Bluetooth headset needs its call link started, and one that never
+    // brings it up (headphones with no microphone) is given up on rather than asked forever.
+    assert.match(route, /audio\.startBluetoothSco\(\)/);
+    assert.match(route, /SCO_WAIT_MS/);
+    assert.match(route, /audio\.stopBluetoothSco\(\)/, 'and the link is let go of');
+
+    // Leaving a room must not reset the choice: prefer is sent only when it is given.
+    const bridge = read('src/platform/native-capacitor.js');
+    assert.match(bridge, /prefer === undefined\s*\n?\s*\? \{ on: Boolean\(on\) \}/);
+    assert.match(read('src/room/index.js'), /changedKey === 'callOutput'\) platform\.callAudio\?\.choose\?\.\(/);
 });

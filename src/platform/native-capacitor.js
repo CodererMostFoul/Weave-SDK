@@ -126,9 +126,16 @@ function createBridge() {
         writeLog: (lines) => WeaveNative.log({ lines }).catch(() => {}),
 
         // In voice or not. Android plays call audio through the earpiece unless told
-        // otherwise; while this is on, it goes to a headset or the loudspeaker (AudioRoute.kt).
+        // otherwise; while this is on, it goes to the output chosen in Settings, else a
+        // headset, else the loudspeaker (AudioRoute.kt). The WebView itself lists no outputs
+        // and cannot pick one, so the list and the choice both live on the native side.
         callAudio: {
-            set: (on) => WeaveNative.callAudio({ on: Boolean(on) }).catch(() => null),
+            // prefer is sent only when given: leaving a room must not reset the choice.
+            set: (on, prefer) => WeaveNative.callAudio(prefer === undefined
+                ? { on: Boolean(on) }
+                : { on: Boolean(on), prefer: String(prefer ?? '') }).catch(() => null),
+            outputs: () => WeaveNative.audioOutputs().catch(() => null),
+            choose: (id) => WeaveNative.chooseAudioOutput({ id: String(id ?? '') }).catch(() => null),
         },
 
         session: { resumeOnLaunch: true },

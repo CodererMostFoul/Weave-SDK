@@ -14,7 +14,7 @@ globalThis.__WEAVE_TARGET__ = 'desktop';
 import {
     SECTIONS, sectionById, joinedOn, profilePanel, voicePanel,
     appearancePanel, invitesPanel, inviteMessage, placeholderPanel, PLACEHOLDER_REASONS, settingsFrame, sessionsPanel,
-    securityPanel, lastActive, bugPanel, DISPLAY_NAME_MAX, notificationsPanel, settingsBack,
+    securityPanel, lastActive, bugPanel, DISPLAY_NAME_MAX, notificationsPanel, settingsBack, phoneOutputNow,
 } from '../src/settings/panels.js';
 import {
     adminUsersPanel, adminChannelsPanel, adminSoundsPanel, adminDangerPanel, adminBugsPanel, reversedName,
@@ -557,6 +557,7 @@ test('every control the settings panels persist survives a round trip', async ()
     const prefs = { ...DEFAULTS };
     const markup = [
         voicePanel({ prefs, devices: [], cameras: [], features: [] }),
+        voicePanel({ prefs, phoneOutputs: { outputs: [{ id: 'speaker', label: 'Loudspeaker' }] } }),
         appearancePanel({ prefs }),
         notificationsPanel({ prefs }),
         profilePanel({
@@ -936,4 +937,49 @@ test('the shortcut rows are marked as needing a keyboard, and push to talk is no
     // Push to talk itself works by holding the microphone button, so it stays.
     assert.ok(!rowOf('pushToTalk').includes('needs-keyboard'));
     assert.match(markup, /or the microphone button/);
+});
+
+test('a phone picks its output from what the phone lists, not from the browser', () => {
+    // A WebView lists no outputs, so this picker used to say "Planned" forever on a phone.
+    const phone = {
+        outputs: [
+            { id: 'speaker', label: 'Loudspeaker', kind: 'speaker' },
+            { id: 'earpiece', label: 'Earpiece (hold the phone to your ear)', kind: 'earpiece' },
+            { id: 'bluetooth:WH-1000', label: 'WH-1000 (Bluetooth headset)', kind: 'bluetooth' },
+        ],
+        current: 'speaker',
+        inVoice: true,
+    };
+    const picker = (markup) => markup.slice(markup.indexOf('<select id="callOutput"'), markup.indexOf('</select>', markup.indexOf('<select id="callOutput"')));
+    const selected = (markup) => [...picker(markup).matchAll(/<option value="([^"]*)"[^>]*\bselected\b/g)].map((m) => m[1]);
+
+    const auto = voicePanel({ prefs: { callOutput: '' }, phoneOutputs: phone });
+    assert.match(auto, /data-setting="callOutput"/);
+    assert.ok(!auto.includes('data-setting="audioOutput"'), 'the browser picker, which a phone cannot use, is not drawn');
+    assert.ok(!/Output device[\s\S]{0,200}only readable once/.test(auto), 'and the output is not "Planned"');
+    assert.deepEqual(selected(auto), ['']);
+    for (const label of ['Automatic', 'Loudspeaker', 'Earpiece', 'WH-1000 \\(Bluetooth headset\\)']) {
+        assert.match(picker(auto), new RegExp(label));
+    }
+    assert.match(auto, /Playing through: Loudspeaker/);
+
+    assert.deepEqual(selected(voicePanel({ prefs: { callOutput: 'earpiece' }, phoneOutputs: phone })), ['earpiece']);
+
+    // Chosen, and switched off since: kept, and said so, while automatic stands in.
+    const gone = voicePanel({ prefs: { callOutput: 'bluetooth:Old buds' }, phoneOutputs: phone });
+    assert.deepEqual(selected(gone), ['bluetooth:Old buds']);
+    assert.match(picker(gone), /data-missing selected>Chosen output \(not connected\)/);
+
+    // A browser or desktop build keeps its own picker.
+    const desktop = voicePanel({ prefs: {}, outputs: [{ deviceId: 'd1', label: 'Speakers' }] });
+    assert.match(desktop, /data-setting="audioOutput"/);
+    assert.ok(!desktop.includes('callOutput'));
+});
+
+test("the line under a phone's output picker says where sound is going", () => {
+    assert.match(phoneOutputNow(null), /voice room/);
+    assert.match(phoneOutputNow({ inVoice: false, outputs: [], current: 'off' }), /voice room/);
+    assert.equal(phoneOutputNow({ inVoice: true, current: 'speaker', outputs: [{ id: 'speaker', label: 'Loudspeaker' }] }),
+        'Playing through: Loudspeaker');
+    assert.match(phoneOutputNow({ inVoice: true, current: 'waiting', outputs: [] }), /Waiting/);
 });

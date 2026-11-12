@@ -230,6 +230,9 @@ test("call audio is the bridge's to route, and a browser has nothing to route", 
     const bare = createMobilePlatform(fakeBase(), null);
     assert.equal(bare.callAudio.available, false);
     assert.equal(await bare.callAudio.set(true), null, 'callable all the same');
+    // No list where there is nothing native to ask: Settings falls back to the browser's.
+    assert.equal(await bare.callAudio.outputs(), null);
+    assert.equal(await bare.callAudio.choose('speaker'), null);
 
     const asked = [];
     const routed = createMobilePlatform(fakeBase(), { callAudio: { set: async (on) => { asked.push(on); return { route: 'speaker' }; } } });

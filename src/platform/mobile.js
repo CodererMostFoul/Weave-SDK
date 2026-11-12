@@ -43,7 +43,12 @@ const absent = {
     // there is nothing to sign back in with, so a plain browser never tries.
     session: { resumeOnLaunch: false },
     // Where call audio plays is the browser's business everywhere but the Android app.
-    callAudio: { available: false, async set() { return null; } },
+    callAudio: {
+        available: false,
+        async set() { return null; },
+        async outputs() { return null; },
+        async choose() { return null; },
+    },
 };
 
 /**

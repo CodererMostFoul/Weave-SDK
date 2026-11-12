@@ -30,7 +30,7 @@ import {
 import {
     settingsFrame, settingsBack, profilePanel, voicePanel, appearancePanel, invitesPanel, inviteMessage, sessionsPanel,
     securityPanel, bugPanel, placeholderPanel, sectionById, PLACEHOLDER_REASONS, notificationsPanel,
-    micTestView,
+    micTestView, phoneOutputNow,
 } from './panels.js';
 import { runMicTest } from '../media/mic-test.js';
 
@@ -61,6 +61,9 @@ export const DEFAULTS = {
     loomMode: DEFAULT_LOOM_MODE,
     micDevice: '',
     audioOutput: '',
+    // The Android app's output: an id from the native list, '' for automatic. Kept apart from
+    // audioOutput, which is a browser device id and is handed to setSinkId().
+    callOutput: '',
     afkExempt: false,
     // Resolved server-side (personal choice, or the admin's default if there is
     // one) — an empty string just means "nothing to show yet".
@@ -158,6 +161,8 @@ export function createSettings({
     let devices = [];
     let cameras = [];
     let outputs = [];
+    // The Android app's outputs, from the native side; null where the page can list its own.
+    let phoneOutputs = null;
     let soundLibrary = [];
     let invite = null;
     let inviteBusy = false;
@@ -242,7 +247,7 @@ export function createSettings({
                 prefs, features, avatarError, soundLibrary,
             });
             case 'voice': return voicePanel({
-                prefs, devices, cameras, outputs, features,
+                prefs, devices, cameras, outputs, phoneOutputs, features,
                 hotkeysGlobal: Boolean(platform.hotkeys?.available),
                 pushToMuteStatus: pushToMuteStatus(),
                 micTest: micTestState(),
@@ -356,6 +361,8 @@ export function createSettings({
         await onPrefsChange(prefs, key);
         // The truth line under the mic picker follows the switch it may have caused.
         if (key === 'micDevice') setTimeout(() => paintActiveMic(), 600);
+        // And the line under the output picker follows the route, once the phone has moved it.
+        if (key === 'callOutput') setTimeout(() => paintPhoneOutput(), 600);
 
         // The AFK exemption is the one preference that belongs to the ACCOUNT rather than
         // the device: being exempt on your desktop and not on your laptop would be a
@@ -1491,6 +1498,16 @@ export function createSettings({
         } catch {
             devices = [];
         }
+        // A WebView lists no outputs at all, so on a phone they come from the native side.
+        if (platform.callAudio?.available) phoneOutputs = await platform.callAudio.outputs?.() ?? null;
+    }
+
+    /** Which output a phone is playing through now, under the picker. */
+    async function paintPhoneOutput() {
+        if (!platform.callAudio?.available) return;
+        phoneOutputs = await platform.callAudio.outputs?.() ?? phoneOutputs;
+        const line = $('#phoneOutputNow', modal.element);
+        if (line) line.textContent = phoneOutputNow(phoneOutputs);
     }
 
     /**

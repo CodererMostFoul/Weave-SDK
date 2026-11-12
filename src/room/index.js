@@ -516,6 +516,8 @@ export function createRoom({ mount, api, link, user, server, features = [], repo
         // The output device applies live too, with no capture to rebuild — just a resink of
         // the context and the playing elements.
         if (changedKey === 'audioOutput') voice.setAudioOutput(prefs.audioOutput ?? '');
+        // On a phone the output is the native side's to set (see native-capacitor.js).
+        if (changedKey === 'callOutput') platform.callAudio?.choose?.(prefs.callOutput ?? '');
         voice.applyChainSettings();
 
         // Flipping push-to-talk changes who owns the microphone, in both directions.
@@ -1578,7 +1580,7 @@ export function createRoom({ mount, api, link, user, server, features = [], repo
             }
             // Standing in a room is being in voice: on Android that moves call audio off the
             // earpiece and onto the loudspeaker or a headset. Standing nowhere lets it go.
-            platform.callAudio?.set(Boolean(msg.channel));
+            platform.callAudio?.set(Boolean(msg.channel), prefs.callOutput ?? '');
             if (msg.channel) {
                 if (voiceState.state === 'elsewhere') voiceState = { state: 'idle' };
             } else if (msg.type === 'joined' && msg.elsewhere) {

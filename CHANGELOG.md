@@ -7,6 +7,15 @@ All notable changes to Weave Client are recorded here. The format follows
 The newest entries are what the app shows under **What's new** after it updates, so they are
 written for the people using it rather than for the people building it.
 
+## [0.1.78] - 2026-11-12
+
+### Added
+- **Choose where you hear the room.** On a phone, Settings → Voice & Audio → Output device now
+  lists the loudspeaker, the earpiece and any headset that is connected, wired, USB or
+  Bluetooth, by its own name. Automatic stays the default: a headset when one is connected,
+  otherwise the loudspeaker. A chosen headset that is switched off waits for you while
+  Automatic stands in, and the line under the picker says what is playing now.
+
 ## [0.1.77] - 2026-11-12
 
 ### Fixed

@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
+import com.getcapacitor.JSArray
 import com.getcapacitor.JSObject
 import com.getcapacitor.Plugin
 import com.getcapacitor.PluginCall
@@ -134,17 +135,53 @@ class WeaveNativePlugin : Plugin() {
         call.resolve()
     }
 
-    /** The page is in voice (on: true) or has left it (on: false). Answers with the route. */
+    /**
+     * The page is in voice (on: true) or has left it (on: false). Answers with the route.
+     * prefer, when given, is the output chosen in Settings, so a room starts on it.
+     */
     @PluginMethod
     fun callAudio(call: PluginCall) {
         val on = call.getBoolean("on") ?: false
+        val prefer = call.getString("prefer")
         // AudioManager is a main-thread affair, and plugin methods arrive on another thread.
         bridge.executeOnMainThread {
+            if (prefer != null) route.prefer(prefer)
             if (on) route.engage() else route.disengage()
             call.resolve(JSObject().apply {
                 put("route", route.current)
                 put("phone", route.state())
             })
+        }
+    }
+
+    /** Every place call audio can go now, for the Settings picker, and which one it is on. */
+    @PluginMethod
+    fun audioOutputs(call: PluginCall) {
+        bridge.executeOnMainThread {
+            val list = JSArray()
+            for (output in route.outputs()) {
+                list.put(JSObject().apply {
+                    put("id", output.id)
+                    put("label", output.label)
+                    put("kind", output.kind)
+                })
+            }
+            call.resolve(JSObject().apply {
+                put("outputs", list)
+                put("current", route.current)
+                put("chosen", route.preferred)
+                put("inVoice", route.inVoice)
+            })
+        }
+    }
+
+    /** The output chosen in Settings; "" is automatic. Applied at once while in voice. */
+    @PluginMethod
+    fun chooseAudioOutput(call: PluginCall) {
+        val id = call.getString("id") ?: ""
+        bridge.executeOnMainThread {
+            route.prefer(id)
+            call.resolve(JSObject().apply { put("route", route.current) })
         }
     }
 
