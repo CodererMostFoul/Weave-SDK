@@ -12,7 +12,7 @@ import assert from 'node:assert/strict';
 globalThis.__WEAVE_TARGET__ = 'desktop';
 
 import {
-    SECTIONS, sectionById, joinedOn, profilePanel, voicePanel,
+    SECTIONS, sectionById, joinedOn, profilePanel, voicePanel, callsField,
     appearancePanel, invitesPanel, inviteMessage, placeholderPanel, PLACEHOLDER_REASONS, settingsFrame, sessionsPanel,
     securityPanel, lastActive, bugPanel, DISPLAY_NAME_MAX, notificationsPanel, settingsBack, phoneOutputNow,
 } from '../src/settings/panels.js';
@@ -993,4 +993,28 @@ test('the phone app offers no camera picker: it starts on the front camera every
     assert.doesNotMatch(phone, /camDevice/, 'a saved choice cannot come back through the panel');
     assert.match(phone, /always starts on the front one/);
     assert.match(phone, /id="camRes"|camRes/, 'quality and frame rate still apply');
+});
+
+test('a phone that can be put to sleep mid-call offers to stay awake, and says when it will', () => {
+    assert.doesNotMatch(voicePanel({ prefs: {} }), /backgroundField/, 'nothing to ask off the phone app');
+    const asleep = voicePanel({ prefs: {}, background: { allowed: false } });
+    assert.match(asleep, /data-ask-background/);
+    const awake = voicePanel({ prefs: {}, background: { allowed: true } });
+    assert.doesNotMatch(awake, /data-ask-background/, 'no button once it is allowed');
+    assert.match(awake, /voice keeps going with the screen off/);
+});
+
+test('calls while closed: says whether the phone will ring, and what is missing if not', () => {
+    assert.equal(callsField({}), '', 'nothing to say off the phone app');
+    assert.match(callsField({ push: { registered: true, distributor: 'ntfy', distributors: 1 } }),
+        /rings for calls even when Weave is closed, through ntfy/);
+    assert.match(callsField({ push: { registered: false, distributors: 0 } }), /ntfy/,
+        'without a distributor, it says which free app to install');
+    assert.match(callsField({ push: { registered: false, distributors: 1 } }), /Not set up yet/);
+    // Android 14 can keep calls small on the lock screen; then there is a way to allow them.
+    assert.match(callsField({ push: { registered: true, distributors: 1 }, fullScreen: false }), /data-ask-fullscreen/);
+    assert.doesNotMatch(callsField({ push: { registered: true, distributors: 1 }, fullScreen: true }), /data-ask-fullscreen/);
+    assert.match(callsField({ fullScreen: false }), /data-ask-fullscreen/, 'even on a server without push');
+    // A distributor's name is somebody else's text.
+    assert.doesNotMatch(callsField({ push: { registered: true, distributor: '<b>x</b>', distributors: 1 } }), /<b>/);
 });

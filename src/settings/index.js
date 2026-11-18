@@ -30,7 +30,7 @@ import {
 import {
     settingsFrame, settingsBack, profilePanel, voicePanel, appearancePanel, invitesPanel, inviteMessage, sessionsPanel,
     securityPanel, bugPanel, placeholderPanel, sectionById, PLACEHOLDER_REASONS, notificationsPanel,
-    micTestView, phoneOutputNow,
+    micTestView, phoneOutputNow, backgroundField, callsField,
 } from './panels.js';
 import { runMicTest } from '../media/mic-test.js';
 
@@ -163,6 +163,11 @@ export function createSettings({
     let outputs = [];
     // The Android app's outputs, from the native side; null where the page can list its own.
     let phoneOutputs = null;
+    // Whether battery optimisation leaves voice alone in the background: null where there is
+    // nothing to ask (anything but the phone app).
+    let backgroundAllowed = null;
+    // Calls while closed (PushRegistry's status) and full-screen calls: the phone app only.
+    let callsState = null;
     let soundLibrary = [];
     let invite = null;
     let inviteBusy = false;
@@ -249,6 +254,8 @@ export function createSettings({
             case 'voice': return voicePanel({
                 prefs, devices, cameras, outputs, phoneOutputs, features,
                 pickCamera: platform.target !== 'mobile',
+                background: backgroundAllowed === null ? null : { allowed: backgroundAllowed },
+                calls: callsState,
                 hotkeysGlobal: Boolean(platform.hotkeys?.available),
                 pushToMuteStatus: pushToMuteStatus(),
                 micTest: micTestState(),
@@ -1231,6 +1238,7 @@ export function createSettings({
     function wirePanel() {
         paintActiveMic();
         wireMicTest();
+        wireBackground();
         wireAdminPanel();
         wireAvatar();
         wireName();
@@ -1501,6 +1509,41 @@ export function createSettings({
         }
         // A WebView lists no outputs at all, so on a phone they come from the native side.
         if (platform.callAudio?.available) phoneOutputs = await platform.callAudio.outputs?.() ?? null;
+        if (platform.background?.available) backgroundAllowed = await platform.background.status() ?? null;
+        if (platform.push?.available || platform.calls?.available) {
+            callsState = {
+                push: platform.push?.available ? await platform.push.status(server.id) : null,
+                fullScreen: platform.calls?.available ? await platform.calls.fullScreenStatus() : null,
+            };
+        }
+    }
+
+    /**
+     * Android's own dialog decides; its answer is read again when the page is next looked at,
+     * which is the moment the dialog closes.
+     */
+    function wireBackground() {
+        $('[data-ask-fullscreen]', modal.element)?.addEventListener('click', async () => {
+            const allowed = await platform.calls.askFullScreen();
+            callsState = { ...callsState, fullScreen: allowed };
+            const field = $('#callsField', modal.element);
+            if (field) field.outerHTML = callsField(callsState);
+        });
+        $('[data-ask-background]', modal.element)?.addEventListener('click', () => {
+            platform.background.ask();
+            const recheck = async () => {
+                if (document.visibilityState !== 'visible') return;
+                document.removeEventListener('visibilitychange', recheck);
+                backgroundAllowed = await platform.background.status() ?? backgroundAllowed;
+                const field = $('#backgroundField', modal.element);
+                if (field) {
+                    field.outerHTML = backgroundField({ allowed: backgroundAllowed });
+                    wireBackground();
+                }
+            };
+            document.addEventListener('visibilitychange', recheck);
+            setTimeout(recheck, 1500);
+        });
     }
 
     /** Which output a phone is playing through now, under the picker. */

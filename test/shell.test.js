@@ -422,3 +422,20 @@ test('a person in a room can be reached from the keyboard, and your own row is n
     assert.match(html, /data-person="kes"\s+tabindex="0" aria-haspopup="menu"/);
     assert.ok(!/data-person="me"\s+tabindex/.test(html), 'your own row opens no menu, so it takes no tab stop');
 });
+
+test('a call you placed says who it is ringing, with the way out beside it', async () => {
+    const { voiceNotice } = await import('../src/room/views/timeline.js');
+    const calling = voiceNotice({ state: 'live', calling: 'Kestrel' });
+    assert.equal(calling.text, 'Calling Kestrel…');
+    assert.deepEqual(calling.action, { label: 'Cancel', attr: 'data-dm-hangup' });
+    // An administrator's mute is still said first: it is the one thing nobody here can undo.
+    assert.match(voiceNotice({ calling: 'Kestrel', forceMuted: true }).text, /administrator/);
+});
+
+test('on top of a locked phone, the notice is the way back to everything else', async () => {
+    const { voiceNotice } = await import('../src/room/views/timeline.js');
+    const locked = voiceNotice({ state: 'live', locked: true });
+    assert.equal(locked.show, true);
+    assert.deepEqual(locked.action, { label: 'Unlock', attr: 'data-unlock' });
+    assert.equal(voiceNotice({ state: 'live' }).show, false, 'and silent once unlocked');
+});

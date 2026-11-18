@@ -234,3 +234,47 @@ test('a phone lists its own outputs and plays through the one chosen', () => {
     assert.match(bridge, /prefer === undefined\s*\n?\s*\? \{ on: Boolean\(on\) \}/);
     assert.match(read('src/room/index.js'), /changedKey === 'callOutput'\) platform\.callAudio\?\.choose\?\.\(/);
 });
+
+test('voice in the background: a phoneCall service, never a camera one, and only this app starts it', () => {
+    const manifest = read('android/app/src/main/AndroidManifest.xml');
+    const service = /<service\s+android:name="\.VoiceService"[^>]*\/>/.exec(manifest)?.[0] ?? '';
+    assert.match(service, /android:exported="false"/);
+    assert.match(service, /foregroundServiceType="phoneCall\|microphone"/);
+    assert.doesNotMatch(service, /camera/, 'a hidden app pauses its camera on purpose');
+    for (const perm of ['FOREGROUND_SERVICE', 'FOREGROUND_SERVICE_PHONE_CALL', 'FOREGROUND_SERVICE_MICROPHONE',
+        'MANAGE_OWN_CALLS', 'WAKE_LOCK', 'POST_NOTIFICATIONS', 'USE_FULL_SCREEN_INTENT']) {
+        assert.match(manifest, new RegExp(`android\.permission\.${perm}"`), perm);
+    }
+    assert.match(manifest, /android:supportsPictureInPicture="true"/);
+    assert.match(read('android/app/build.gradle'), /androidx\.core:core-telecom:\$coreTelecomVersion/);
+});
+
+test('a call opens the app only through its own private entrance', () => {
+    // MainActivity is exported (launcher, invite links). Anything that answers or places a
+    // call goes through a non-exported alias, so no other app — and no web page — can make
+    // the phone answer one.
+    const manifest = read('android/app/src/main/AndroidManifest.xml');
+    const alias = /<activity-alias[\s\S]*?\/>/.exec(manifest)?.[0] ?? '';
+    assert.match(alias, /android:name="\.CallEntry"/);
+    assert.match(alias, /android:exported="false"/);
+    assert.doesNotMatch(alias, /intent-filter|BROWSABLE/);
+    const receiver = /<receiver\s+android:name="\.CallActionReceiver"[^>]*\/>/.exec(manifest)?.[0] ?? '';
+    assert.match(receiver, /android:exported="false"/);
+    assert.equal((manifest.match(/BROWSABLE/g) ?? []).length, 1, 'the invite link stays the only browsable way in');
+
+    const activity = read('android/app/src/main/java/io/github/weavespeak/client/MainActivity.kt');
+    assert.match(activity, /if \(!component\.endsWith\("\.CallEntry"\)\) return/, 'call extras are believed only from the alias');
+});
+
+test('pushes arrive at a service only the push library can reach, through no Google services', () => {
+    const manifest = read('android/app/src/main/AndroidManifest.xml');
+    const service = /<service\s+android:name="\.WeavePushService"[\s\S]*?<\/service>/.exec(manifest)?.[0] ?? '';
+    assert.match(service, /android:exported="false"/);
+    assert.match(service, /org\.unifiedpush\.android\.connector\.PUSH_EVENT/);
+    assert.match(read('android/app/build.gradle'), /org\.unifiedpush\.android:connector:\$unifiedPushVersion/);
+    assert.doesNotMatch(read('android/app/build.gradle'), /firebase/i, 'no Firebase: a self-hosted server must not need Google');
+
+    // A message the library could not decrypt is not believed.
+    const push = read('android/app/src/main/java/io/github/weavespeak/client/WeavePushService.kt');
+    assert.match(push, /if \(!message\.decrypted\)/);
+});

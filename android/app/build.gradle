@@ -91,6 +91,9 @@ dependencies {
     // system's hold for a phone call. See TelecomCallSession.
     implementation "androidx.core:core-telecom:$coreTelecomVersion"
     implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:$coroutinesVersion"
+    // Calls that ring with Weave closed, through whichever UnifiedPush distributor (ntfy, or
+    // another) the person has installed. No Google services. See PushRegistry.
+    implementation "org.unifiedpush.android:connector:$unifiedPushVersion"
     implementation project(':capacitor-android')
     implementation project(':capacitor-cordova-android-plugins')
 }

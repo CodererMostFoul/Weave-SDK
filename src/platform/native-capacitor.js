@@ -156,9 +156,34 @@ function createBridge() {
         pip: {
             set: (allowed) => WeaveNative.pip({ allowed: Boolean(allowed) }).catch(() => null),
             onChange(cb) {
-                const handle = WeaveNative.addListener('window', ({ pip }) => cb(Boolean(pip)));
+                // The same event also reports the lock screen; only an answer about
+                // picture-in-picture is one.
+                const handle = WeaveNative.addListener('window', ({ pip }) => {
+                    if (typeof pip === 'boolean') cb(pip);
+                });
                 return () => { handle.then((h) => h.remove()).catch(() => {}); };
             },
+        },
+
+        // A call ringing in (IncomingCall.kt): the phone's own ringtone and full-screen call
+        // screen, and Answer or Decline pressed on it. And a call on top of the lock screen.
+        calls: {
+            ring: (ring) => WeaveNative.ring(ring).then((r) => Boolean(r?.ringing)).catch(() => false),
+            end: (callId) => WeaveNative.endRing({ callId: String(callId) }).catch(() => null),
+            onAction(cb) {
+                const handle = WeaveNative.addListener('callAction', (action) => cb(action));
+                return () => { handle.then((h) => h.remove()).catch(() => {}); };
+            },
+            overLock: (on) => WeaveNative.showOverLock({ on: Boolean(on) }).catch(() => null),
+            unlock: () => WeaveNative.unlock().catch(() => null),
+            onLockChange(cb) {
+                const handle = WeaveNative.addListener('window', ({ locked }) => {
+                    if (typeof locked === 'boolean') cb(locked);
+                });
+                return () => { handle.then((h) => h.remove()).catch(() => {}); };
+            },
+            fullScreenStatus: () => WeaveNative.fullScreenStatus().then((r) => Boolean(r?.allowed)).catch(() => null),
+            askFullScreen: () => WeaveNative.askFullScreen().then((r) => Boolean(r?.allowed)).catch(() => null),
         },
 
         // Hold-to-ear (EarSensor.kt): armed only while the page says the moment is right.
@@ -174,6 +199,16 @@ function createBridge() {
         notifications: {
             status: () => WeaveNative.notificationStatus().then((r) => Boolean(r?.allowed)).catch(() => null),
             ask: () => WeaveNative.askNotifications().then((r) => Boolean(r?.allowed)).catch(() => null),
+        },
+
+        // Calls that ring with Weave closed (PushRegistry.kt): registered per server, through
+        // whichever UnifiedPush distributor — ntfy, usually — the person has installed.
+        push: {
+            register: ({ serverId, origin, vapidKey }) => WeaveNative.pushRegister({
+                serverId: String(serverId), origin: String(origin), ...(vapidKey ? { vapidKey: String(vapidKey) } : {}),
+            }).catch(() => null),
+            unregister: (serverId) => WeaveNative.pushUnregister({ serverId: String(serverId) }).catch(() => null),
+            status: (serverId) => WeaveNative.pushStatus({ serverId: String(serverId ?? '') }).catch(() => null),
         },
 
         // Whether voice is registered with Android's call system (TelecomCallSession.kt). Off

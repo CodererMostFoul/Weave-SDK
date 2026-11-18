@@ -38,6 +38,11 @@ import com.getcapacitor.annotation.PermissionCallback
  *  - ear: hold-to-ear (EarSensor).
  *  - backgroundStatus / askBackground, notificationStatus / askNotifications: the two
  *    permissions voice in the background depends on.
+ *  - ring / endRing and a "callAction" event: the phone ringing for a call (IncomingCall),
+ *    and Answer or Decline pressed on it. showOverLock / unlock / fullScreenStatus /
+ *    askFullScreen: a call on top of the lock screen.
+ *  - pushRegister / pushUnregister / pushStatus: calls that ring with Weave closed
+ *    (PushRegistry, WeavePushService).
  *
  * Plugin methods run on Capacitor's plugin thread, not the main thread, so the Keystore and
  * file work here does not stall the UI.
@@ -56,7 +61,25 @@ class WeaveNativePlugin : Plugin() {
 
     override fun load() {
         VoiceBus.listener = { action -> notifyListeners("voiceAction", JSObject().apply { put("action", action) }) }
-        VoiceBus.windowListener = { pip -> notifyListeners("window", JSObject().apply { put("pip", pip) }) }
+        VoiceBus.windowListener = { pip, locked ->
+            notifyListeners("window", JSObject().apply {
+                pip?.let { put("pip", it) }
+                locked?.let { put("locked", it) }
+            })
+        }
+        // Retained until the page listens: an Answer that opened the app from cold arrives
+        // long before the page has signed back in and subscribed.
+        VoiceBus.callListener = { a ->
+            notifyListeners("callAction", JSObject().apply {
+                put("action", a.action)
+                put("callId", a.callId)
+                put("kind", a.kind)
+                put("threadId", a.threadId)
+                put("channelId", a.channelId)
+                put("serverId", a.serverId)
+            }, true)
+        }
+        for (held in VoiceBus.takeHeld()) VoiceBus.callAction(held)
 
         val connectivity = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         val callback = object : ConnectivityManager.NetworkCallback() {
@@ -76,6 +99,7 @@ class WeaveNativePlugin : Plugin() {
     override fun handleOnDestroy() {
         VoiceBus.listener = null
         VoiceBus.windowListener = null
+        VoiceBus.callListener = null
         ear.arm(false)
         route.disengage()
         val callback = networkCallback ?: return
@@ -238,7 +262,10 @@ class WeaveNativePlugin : Plugin() {
                 kind = if (call.getString("kind") == "call") "call" else "room",
                 muted = call.getBoolean("muted") ?: false,
                 video = call.getBoolean("video") ?: false,
-                since = call.getDouble("since")?.toLong() ?: System.currentTimeMillis(),
+                // Read as a long from the raw data: a millisecond timestamp arrives as one, and
+                // PluginCall.getDouble answers null for it, which restarted the notification's
+                // timer at every update (a mute, a camera) instead of counting from the start.
+                since = call.data.optLong("since", 0L).takeIf { it > 0 } ?: System.currentTimeMillis(),
                 held = call.getBoolean("held") ?: false,
             )
             val ok = try {
@@ -328,6 +355,100 @@ class WeaveNativePlugin : Plugin() {
     @PermissionCallback
     private fun notificationsAnswered(call: PluginCall) {
         notificationStatus(call)
+    }
+
+    /** Ring for a call: the caller (or huddle) by name, until expiresAt. Ignores a repeat. */
+    @PluginMethod
+    fun ring(call: PluginCall) {
+        val callId = call.getString("callId")
+        if (callId.isNullOrEmpty()) {
+            call.reject("callId is required")
+            return
+        }
+        val ring = IncomingCall.Ring(
+            callId = callId,
+            title = call.getString("title")?.take(80)?.ifBlank { null } ?: "Someone",
+            subtitle = call.getString("subtitle")?.take(120) ?: "is calling you",
+            kind = if (call.getString("kind") == "huddle") "huddle" else "dm",
+            threadId = call.getString("threadId"),
+            channelId = call.getString("channelId"),
+            serverId = call.getString("serverId"),
+            expiresAt = call.data.optLong("expiresAt", 0L),
+        )
+        val rang = IncomingCall.ring(context, ring)
+        call.resolve(JSObject().apply { put("ringing", rang) })
+    }
+
+    /** Stop ringing for a call, whatever ended it. */
+    @PluginMethod
+    fun endRing(call: PluginCall) {
+        call.getString("callId")?.let { IncomingCall.end(context, it) }
+        call.resolve()
+    }
+
+    /** Whether the window may sit on top of the lock screen: only while a call rings or runs. */
+    @PluginMethod
+    fun showOverLock(call: PluginCall) {
+        val on = call.getBoolean("on") ?: false
+        bridge.executeOnMainThread {
+            (activity as? MainActivity)?.showOverLock(on)
+            call.resolve()
+        }
+    }
+
+    @PluginMethod
+    fun unlock(call: PluginCall) {
+        bridge.executeOnMainThread {
+            (activity as? MainActivity)?.unlock()
+            call.resolve()
+        }
+    }
+
+    /** Android 14+: whether calls may fill the screen over the lock screen. */
+    @PluginMethod
+    fun fullScreenStatus(call: PluginCall) {
+        call.resolve(JSObject().apply { put("allowed", IncomingCall.canFillScreen(context)) })
+    }
+
+    @PluginMethod
+    fun askFullScreen(call: PluginCall) {
+        if (Build.VERSION.SDK_INT >= 34) {
+            try {
+                activity.startActivity(
+                    Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT, Uri.parse("package:${context.packageName}")),
+                )
+            } catch (_: Exception) {
+                // No settings screen on this build; nothing else to offer.
+            }
+        }
+        fullScreenStatus(call)
+    }
+
+    /** Ask for this server's calls while Weave is closed. Answers whether a distributor took it. */
+    @PluginMethod
+    fun pushRegister(call: PluginCall) {
+        val serverId = call.getString("serverId")
+        val origin = call.getString("origin")
+        if (serverId.isNullOrEmpty() || origin.isNullOrEmpty()) {
+            call.reject("serverId and origin are required")
+            return
+        }
+        bridge.executeOnMainThread {
+            PushRegistry.register(activity, serverId, origin, call.getString("vapidKey")) { ok ->
+                call.resolve(PushRegistry.status(context, serverId).put("asked", ok).let { JSObject.fromJSONObject(it) })
+            }
+        }
+    }
+
+    @PluginMethod
+    fun pushUnregister(call: PluginCall) {
+        call.getString("serverId")?.let { PushRegistry.unregister(context, it) }
+        call.resolve()
+    }
+
+    @PluginMethod
+    fun pushStatus(call: PluginCall) {
+        call.resolve(JSObject.fromJSONObject(PushRegistry.status(context, call.getString("serverId"))))
     }
 
     @PluginMethod

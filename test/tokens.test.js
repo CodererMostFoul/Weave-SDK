@@ -270,3 +270,29 @@ test("a bubble's card is a sheet on a phone, and a rebuilt card does not make a 
     assert.ok(css.indexOf('\n.bubble-popup.settled {') > css.indexOf('\n.bubble-popup.as-sheet {'));
     assert.ok(css.indexOf('\n.bubble-popup.settled {') > css.indexOf('\n.bubble-popup {'));
 });
+
+test('picture-in-picture shows the picture and nothing else, and comes last', () => {
+    // A window that small has room for the video, and Android draws its own Mute and Hang up
+    // over it. Anything else left showing would squeeze the picture into a sliver.
+    const css = read('shell.css');
+    const at = css.indexOf('.app-shell.pip .titlebar');
+    assert.ok(at > 0, 'the picture-in-picture block exists');
+    const hidden = css.slice(at, css.indexOf('{', at));
+    for (const part of ['.titlebar', '.sidebar', '.rail', '.room-head', '.timeline', '.composer-wrap', '.tile.idle']) {
+        assert.ok(hidden.includes(`.app-shell.pip ${part}`), `${part} is hidden in picture-in-picture`);
+    }
+    // After every @media block, so the phone layout cannot win over it at a phone's width.
+    assert.ok(at > css.lastIndexOf('@media'), 'placed after the media queries');
+});
+
+test('a locked phone in a call shows the call, never the conversations', () => {
+    const css = read('shell.css');
+    const at = css.indexOf('.app-shell[data-locked] .rail');
+    assert.ok(at > 0);
+    const hidden = css.slice(at, css.indexOf('{', at));
+    for (const part of ['.rail', '.timeline', '.composer-wrap', '.drawer-toggle', '[data-open-settings]']) {
+        assert.ok(hidden.includes(`.app-shell[data-locked] ${part}`), `${part} is hidden while locked`);
+    }
+    assert.ok(!hidden.includes('#selfBarSlot,'), 'the dock, with mute and hang up, stays');
+    assert.ok(at > css.lastIndexOf('@media'), 'after the media queries, so the phone layout cannot undo it');
+});

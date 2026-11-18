@@ -256,6 +256,29 @@ export function voiceNotice(status = {}) {
         };
     }
 
+    // A call you placed that has not been answered yet: said, with the way out beside it,
+    // while the ringback plays.
+    if (status.calling) {
+        return {
+            show: true,
+            tone: 'quiet',
+            text: `Calling ${status.calling}…`,
+            action: { label: 'Cancel', attr: 'data-dm-hangup' },
+        };
+    }
+
+    // On top of the lock screen, during a call. Your rooms and messages are hidden until the
+    // phone is unlocked — answering a call must not hand your conversations to whoever is
+    // holding the phone — and this is the way to unlock it.
+    if (status.locked) {
+        return {
+            show: true,
+            tone: 'quiet',
+            text: 'Your messages are hidden while your phone is locked.',
+            action: { label: 'Unlock', attr: 'data-unlock' },
+        };
+    }
+
     switch (status.state) {
         case 'elsewhere':
             // One account is heard on one device. This one stays signed in, reading, and

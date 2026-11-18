@@ -88,6 +88,11 @@ holds the app log. Fatal startup errors go to `%TEMP%\weave\startup-crash.log`.
 | Message chimes | `src/room/notify.js` |
 | What's New after an update | `src/updates/changelog.js` (pure), `src/updates/whats-new.js` (dialog) |
 | Bubbles — drifting, the popup chat, the list | `src/room/bubbles.js` (controller), `src/ui/bubbles.js` (motion), `src/room/bubble-store.js` (state), `src/room/views/bubbles.js` |
+| Camera flip, front camera by default, the back camera unmirrored | `flipTarget`/`cameraConstraints` in `src/media/presets.js`, `switchCamera` in `src/media/voice.js` |
+| A phone opening on chat rather than in voice | `arriveInVoice` in `src/auth/resume.js` |
+| Voice behind the lock screen: the call notification, hold for a phone call, picture-in-picture, hold-to-ear | `src/room/voice-session.js` (decides), `syncPhone` in `src/room/index.js`; native `VoiceService.kt`, `CallSession.kt` (`TelecomCallSession.kt` is off until proven on a phone), `EarSensor.kt`, `MainActivity.kt` |
+| Ringing in and out — DM calls, huddles, ringback, the locked-phone view | `src/room/ring.js`, `src/media/call-tones.js`; native `IncomingCall.kt`, `CallActionReceiver.kt` |
+| Calls that ring with Weave closed, missed calls | native `PushRegistry.kt`, `WeavePushService.kt`, `MissedCall.kt` (UnifiedPush; the server side is Weave_Server `docs/push.md`) |
 
 ## Conventions
 

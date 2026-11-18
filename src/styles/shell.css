@@ -3385,3 +3385,82 @@
     from { transform: translateY(24px); opacity: 0; }
     to { transform: none; opacity: 1; }
 }
+
+/* ── A call on top of the lock screen ───────────────────────────────────────
+   Answering a call from a locked phone must not hand its conversations to whoever is
+   holding it. While the phone is locked during a call (data-locked, set by the room from
+   MainActivity's report), the call is all there is: the picture, the dock's controls, and
+   the notice with its Unlock button. Unlocking brings the rest straight back. */
+.app-shell[data-locked] .rail,
+.app-shell[data-locked] .sidebar > :not(#selfBarSlot),
+.app-shell[data-locked] .self-id,
+.app-shell[data-locked] .drawer-scrim,
+.app-shell[data-locked] .drawer-toggle,
+.app-shell[data-locked] [data-open-settings],
+.app-shell[data-locked] #addMemberBtn,
+.app-shell[data-locked] .timeline,
+.app-shell[data-locked] .bubbles-layer,
+.app-shell[data-locked] .composer-wrap { display: none !important; }
+.app-shell[data-locked] .room { grid-template-rows: auto minmax(0, 1fr) 0 auto 0; }
+
+/* ── Picture-in-picture ─────────────────────────────────────────────────────
+   The Android app during a video call, shrunk to a small floating window by leaving it
+   (MainActivity, room/voice-session.js pipAllowed). That window is for the picture and
+   nothing else: no title bar, rooms, chat or dock — Android draws its own Mute and Hang up
+   over it, and nothing in a window that small can be tapped accurately anyway. Last in the
+   file so it outranks the phone layout above. */
+.app-shell.pip { grid-template-rows: minmax(0, 1fr); padding: 0; }
+.app-shell.pip .titlebar,
+.app-shell.pip .rail,
+.app-shell.pip .sidebar,
+.app-shell.pip .drawer-scrim,
+.app-shell.pip .room-bg,
+.app-shell.pip .room-head,
+.app-shell.pip .timeline,
+.app-shell.pip .bubbles-layer,
+.app-shell.pip .voice-notice-slot,
+.app-shell.pip .composer-wrap,
+.app-shell.pip .stage-divider,
+.app-shell.pip .strip-shell,
+.app-shell.pip .stage-strip,
+.app-shell.pip .tile.idle,
+.app-shell.pip .live-badge,
+.app-shell.pip .stream-pill,
+.app-shell.pip .tile-chip,
+.app-shell.pip .watch-veil,
+.app-shell.pip .watch-btn { display: none !important; }
+.app-shell.pip .app-body {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+    padding: 0;
+    gap: 0;
+}
+.app-shell.pip .room {
+    grid-row: 1;
+    grid-template-rows: 0 minmax(0, 1fr) 0 0 0;
+    border: 0;
+    border-radius: 0;
+    background: var(--video-backdrop);
+}
+.app-shell.pip #stageSlot { min-height: 0; }
+.app-shell.pip .room .stage {
+    height: 100% !important;
+    padding: 0;
+    gap: 0;
+    grid-template-rows: minmax(0, 1fr);
+}
+.app-shell.pip .room .stage .stage-grid {
+    display: grid;
+    height: 100%;
+    grid-template-columns: minmax(0, 1fr);
+    grid-auto-rows: minmax(0, 1fr);
+    gap: 0;
+}
+.app-shell.pip .room .stage .tile {
+    width: 100%;
+    height: 100%;
+    max-height: none;
+    aspect-ratio: auto;
+    border: 0;
+    border-radius: 0;
+}

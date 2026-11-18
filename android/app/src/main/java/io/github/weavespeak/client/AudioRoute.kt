@@ -408,6 +408,8 @@ class AudioRoute private constructor(context: Context) {
         if (route.id == lastRoute) return
         lastRoute = route.id
         AppLog.write(appContext, "info", "call audio on the ${route.label}")
+        // The call notification's Speaker button names where the sound is going next.
+        VoiceService.refresh()
     }
 
     private fun kindOf(type: Int): String? = when (type) {

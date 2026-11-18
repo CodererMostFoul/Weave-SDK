@@ -1,7 +1,9 @@
 package io.github.weavespeak.client
 
+import android.app.KeyguardManager
 import android.app.PictureInPictureParams
 import android.app.RemoteAction
+import android.content.Intent
 import android.content.res.Configuration
 import android.graphics.drawable.Icon
 import android.os.Build
@@ -30,6 +32,11 @@ import com.getcapacitor.WebViewListener
  *     that keeps playing (and keeps your camera going, since the window is still visible),
  *     rather than hiding it. Only while the page says there is a picture worth keeping
  *     (VoiceBus.pipAllowed); otherwise leaving is leaving.
+ *  6. Calls over the lock screen. A ringing call's notification opens the app through
+ *     CallEntry, a non-exported alias of this activity, so no other app can open it on a
+ *     call. While a call rings or is in progress the window may show on top of the lock
+ *     screen and turn the screen on (showOverLock); the page hides everything but the call
+ *     while the phone is still locked, and Unlock asks for the lock screen to be dismissed.
  *
  * The back button is not handled here. The page decides what Back means (src/ui/back.js),
  * through @capacitor/app, and it never exits — leaving would end the call.
@@ -55,11 +62,60 @@ class MainActivity : BridgeActivity() {
                 return true
             }
         })
+
+        handleCallIntent(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleCallIntent(intent)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Every return to the screen re-states it: unlocking happens with the app on screen,
+        // and that is the page's cue to bring back the rooms and the chat.
+        VoiceBus.window(locked = getSystemService(KeyguardManager::class.java).isKeyguardLocked)
+    }
+
+    /**
+     * A ringing call's notification, tapped (show) or answered (accept). Only through
+     * CallEntry: the activity itself is exported for the launcher and invite links, and an
+     * intent carrying these extras sent straight to it by another app is not believed.
+     */
+    private fun handleCallIntent(intent: Intent?) {
+        val component = intent?.component?.className ?: return
+        if (!component.endsWith(".CallEntry")) return
+        val action = VoiceBus.CallAction.from(intent) ?: return
+        showOverLock(true)
+        if (action.action == "accept") IncomingCall.end(this, action.callId)
+        VoiceBus.callAction(action)
+        // Consumed: a later configuration change must not answer the call a second time.
+        intent.removeExtra(IncomingCall.EXTRA_ACTION)
+    }
+
+    /** May the window sit on top of the lock screen and wake it? Only for a call. */
+    fun showOverLock(on: Boolean) {
+        setShowWhenLocked(on)
+        setTurnScreenOn(on)
+    }
+
+    /** Ask for the lock screen to be dismissed: the person's own PIN or fingerprint, never ours. */
+    fun unlock() {
+        getSystemService(KeyguardManager::class.java).requestDismissKeyguard(this, null)
     }
 
     /** Re-stated whenever the page changes its mind, so Android 12+ can enter it by itself. */
     fun applyPipParams() {
         if (!packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_PICTURE_IN_PICTURE)) return
+        // The call ended, or the camera went off, while the window was small: there is no
+        // picture left to keep, and a floating black rectangle would be all that remained
+        // (found on the S9). The window goes, as a calling app's does when its call ends.
+        if (!VoiceBus.pipAllowed && isInPictureInPictureMode) {
+            moveTaskToBack(false)
+            return
+        }
         try {
             setPictureInPictureParams(pipParams())
         } catch (e: IllegalStateException) {
@@ -103,7 +159,7 @@ class MainActivity : BridgeActivity() {
 
     override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
-        VoiceBus.window(isInPictureInPictureMode)
+        VoiceBus.window(pip = isInPictureInPictureMode)
     }
 
     override fun onDestroy() {

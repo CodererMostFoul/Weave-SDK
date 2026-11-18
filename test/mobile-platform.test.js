@@ -241,3 +241,28 @@ test("call audio is the bridge's to route, and a browser has nothing to route", 
     await routed.callAudio.set(false);
     assert.deepEqual(asked, [true, false]);
 });
+
+test('the phone around a call is the bridge\'s; a browser answers "not here" and stays callable', async () => {
+    const bare = createMobilePlatform(fakeBase(), null);
+    for (const name of ['voiceSession', 'pip', 'ear', 'background', 'notifications', 'calls']) {
+        assert.equal(bare[name].available, false, `${name} is not claimed without a bridge`);
+    }
+    // Every call still works, so the room never has to ask before calling.
+    assert.deepEqual(await bare.voiceSession.set({ title: 'Hall' }), { ok: false });
+    assert.equal(typeof bare.voiceSession.onAction(() => {}), 'function', 'an unsubscribe, even with nothing to say');
+    assert.equal(typeof bare.pip.onChange(() => {}), 'function');
+    assert.equal(await bare.calls.ring({ callId: 'x' }), false, 'nothing rang: the page rings for itself');
+    assert.equal(typeof bare.calls.onAction(() => {}), 'function');
+    assert.equal(await bare.background.status(), null);
+
+    const said = [];
+    const phone = createMobilePlatform(fakeBase(), {
+        voiceSession: { set: async (s) => { said.push(s); return { ok: true }; }, onAction: () => () => {} },
+        calls: { ring: async () => true },
+    });
+    assert.equal(phone.voiceSession.available, true);
+    assert.deepEqual(await phone.voiceSession.set({ title: 'Hall' }), { ok: true });
+    assert.deepEqual(said, [{ title: 'Hall' }]);
+    assert.equal(phone.calls.available, true);
+    assert.equal(phone.pip.available, false, 'only what the bridge actually offers is claimed');
+});

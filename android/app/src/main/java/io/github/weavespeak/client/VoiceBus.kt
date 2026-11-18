@@ -1,5 +1,6 @@
 package io.github.weavespeak.client
 
+import android.content.Intent
 import android.os.Handler
 import android.os.Looper
 
@@ -41,11 +42,55 @@ object VoiceBus {
     @Volatile
     var pipAllowed = false
 
-    /** The window changed in a way the page cannot see for itself: picture-in-picture on/off. */
+    /**
+     * The window changed in a way the page cannot see for itself: picture-in-picture on or
+     * off, and whether it is showing on top of the lock screen. Null is "unchanged".
+     */
     @Volatile
-    var windowListener: ((pip: Boolean) -> Unit)? = null
+    var windowListener: ((pip: Boolean?, locked: Boolean?) -> Unit)? = null
 
-    fun window(pip: Boolean) {
-        main.post { windowListener?.invoke(pip) }
+    fun window(pip: Boolean? = null, locked: Boolean? = null) {
+        main.post { windowListener?.invoke(pip, locked) }
     }
+
+    /** Answer, Decline, or a tap on a ringing call, from its notification. */
+    data class CallAction(
+        val action: String,       // "accept" | "decline" | "show"
+        val callId: String,
+        val kind: String,
+        val threadId: String?,
+        val channelId: String?,
+        val serverId: String?,
+    ) {
+        companion object {
+            fun from(intent: Intent?): CallAction? {
+                intent ?: return null
+                return CallAction(
+                    action = intent.getStringExtra(IncomingCall.EXTRA_ACTION) ?: return null,
+                    callId = intent.getStringExtra(IncomingCall.EXTRA_CALL_ID) ?: return null,
+                    kind = intent.getStringExtra(IncomingCall.EXTRA_KIND) ?: "dm",
+                    threadId = intent.getStringExtra(IncomingCall.EXTRA_THREAD),
+                    channelId = intent.getStringExtra(IncomingCall.EXTRA_CHANNEL),
+                    serverId = intent.getStringExtra(IncomingCall.EXTRA_SERVER),
+                )
+            }
+        }
+    }
+
+    @Volatile
+    var callListener: ((CallAction) -> Unit)? = null
+
+    // An Answer that opened the app from cold arrives before the page has signed back in and
+    // is listening. It waits here, and the page collects it once it can act on it.
+    private val held = mutableListOf<CallAction>()
+
+    fun callAction(action: CallAction) {
+        main.post {
+            val listen = callListener
+            if (listen != null) listen(action) else synchronized(held) { held.add(action) }
+        }
+    }
+
+    /** Everything that arrived while nobody was listening, once. */
+    fun takeHeld(): List<CallAction> = synchronized(held) { held.toList().also { held.clear() } }
 }

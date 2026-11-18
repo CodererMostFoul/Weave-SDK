@@ -51,6 +51,34 @@
         </activity>
 
         <!--
+          The way a ringing call's notification opens the app (Answer, or a tap on the ring).
+          Not exported, unlike MainActivity itself: no other app can open Weave on a call, and
+          MainActivity only believes call extras that arrive through here.
+        -->
+        <activity-alias
+            android:name=".CallEntry"
+            android:targetActivity=".MainActivity"
+            android:exported="false" />
+
+        <!--
+          Where a Weave server's pushes arrive, through the UnifiedPush distributor (ntfy or
+          another) the person has installed: calls that ring with Weave closed. Not exported;
+          the distributor reaches it through the UnifiedPush library's own exported parts.
+        -->
+        <service
+            android:name=".WeavePushService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="org.unifiedpush.android.connector.PUSH_EVENT" />
+            </intent-filter>
+        </service>
+
+        <!-- Decline, from a ringing call's notification. Only this app's notifications send it. -->
+        <receiver
+            android:name=".CallActionReceiver"
+            android:exported="false" />
+
+        <!--
           Voice that keeps going with the screen off (VoiceService). phoneCall is what a calling
           app holds on Android 14 and later; microphone keeps the microphone recording once
           the app is out of sight (Android 11+), which it otherwise would not. Not exported:
@@ -90,6 +118,8 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- The call's controls live in a notification, which Android 13 asks about. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- An incoming call fills the screen over the lock screen, as a phone's own does. -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <!-- "Keep Weave running in the background" in Settings asks with this. -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 

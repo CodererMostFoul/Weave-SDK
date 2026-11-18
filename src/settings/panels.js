@@ -509,12 +509,57 @@ function phoneOutputField(prefs, phone) {
            </div>`;
 }
 
+/**
+ * Voice behind the lock screen, on a phone. The app keeps voice going with a foreground
+ * service, which Android honours; some makers (Samsung, Xiaomi, others) still put apps they
+ * think are idle to sleep, and leaving battery optimisation is the one switch that stops
+ * them. Null `background` means this device has no such question to ask.
+ */
+export function backgroundField(background) {
+    if (!background) return '';
+    return `<div class="field" id="backgroundField">
+             <label>Voice in the background</label>
+             ${background.allowed
+                 ? '<span class="setting-note">On: voice keeps going with the screen off or another app open.</span>'
+                 : `<span class="setting-hint">Some phones stop apps they think are idle, even mid-call. Allowing
+                      Weave to run in the background keeps voice going with the screen off.</span>
+                    <button type="button" class="btn small" data-ask-background>Allow in the background</button>`}
+           </div>`;
+}
+
+/**
+ * Whether this phone rings for calls with Weave closed, and what to do if it does not.
+ * `push` is PushRegistry's status for this server (null: not the phone app, or a server
+ * without push); `fullScreen` is false only where Android 14 has calls set to stay small.
+ */
+export function callsField({ push = null, fullScreen = null } = {}) {
+    if (!push && fullScreen !== false) return '';
+    const line = !push ? ''
+        : push.registered
+            ? `On: your phone rings for calls even when Weave is closed${push.distributor ? `, through ${esc(push.distributor)}` : ''}.`
+            : push.distributors
+                ? 'Not set up yet. Open the app you use for notifications (such as ntfy) and allow Weave, then come back.'
+                : 'To ring when Weave is closed, your phone needs a free notification app such as ntfy (from F-Droid or Google Play). Install it, then open Weave again.';
+    return `<div class="field" id="callsField">
+             <label>Calls when Weave is closed</label>
+             ${line ? `<span class="setting-hint">${line}</span>` : ''}
+             ${fullScreen === false ? `
+             <span class="setting-hint">Calls ring as a small notification while your phone is locked. Allow
+               full-screen calls to see who is calling, and answer, right on the lock screen.</span>
+             <button type="button" class="btn small" data-ask-fullscreen>Allow full-screen calls</button>` : ''}
+           </div>`;
+}
+
 export function voicePanel({
     prefs = {}, devices = [], cameras = [], outputs = [], phoneOutputs = null, features = [],
     hotkeysGlobal = false, pushToMuteStatus = null, micTest = {},
     // False on the phone app, which always starts on the selfie camera and flips from the
     // room: a camera saved here would quietly win over that, every call.
     pickCamera = true,
+    // { allowed } on a phone that can be asked to leave battery optimisation; null elsewhere.
+    background = null,
+    // { push, fullScreen } on the phone app; see callsField.
+    calls = null,
 } = {}) {
     const hasAfk = features.includes('module.afk');
     return `
@@ -544,6 +589,10 @@ export function voicePanel({
              <span class="setting-note">Where the room's voices play. Point this at your headset, away from anything you capture for a stream, so viewers never hear themselves through your share.</span>
            </div>`
         : notYet('Output device', 'Device names are only readable once microphone access has been granted.')}
+
+    ${backgroundField(background)}
+
+    ${callsField(calls ?? {})}
 
     ${micTestView(micTest)}
 

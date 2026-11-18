@@ -63,6 +63,25 @@ const absent = {
         onChange() { return () => {}; },
     },
     ear: { available: false, async arm() { return null; } },
+    // A browser has no way to be woken for a call while it is closed.
+    push: {
+        available: false,
+        async register() { return null; },
+        async unregister() { return null; },
+        async status() { return null; },
+    },
+    // Ringing is the page's own modal and tone everywhere but the phone app.
+    calls: {
+        available: false,
+        async ring() { return false; },
+        async end() { return null; },
+        onAction() { return () => {}; },
+        async overLock() { return null; },
+        async unlock() { return null; },
+        onLockChange() { return () => {}; },
+        async fullScreenStatus() { return null; },
+        async askFullScreen() { return null; },
+    },
     background: { available: false, async status() { return null; }, async ask() { return null; } },
     notifications: { available: false, async status() { return null; }, async ask() { return null; } },
 };
@@ -157,6 +176,8 @@ export function createMobilePlatform(base, bridge = null, timers = {}) {
         voiceSession: offered('voiceSession', absent.voiceSession),
         pip: offered('pip', absent.pip),
         ear: offered('ear', absent.ear),
+        calls: offered('calls', absent.calls),
+        push: offered('push', absent.push),
         background: offered('background', absent.background),
         notifications: offered('notifications', absent.notifications),
         ...(bridge?.telecom ? { telecom: bridge.telecom } : {}),

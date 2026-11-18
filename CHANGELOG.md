@@ -7,6 +7,47 @@ All notable changes to Weave Client are recorded here. The format follows
 The newest entries are what the app shows under **What's new** after it updates, so they are
 written for the people using it rather than for the people building it.
 
+## [1.1.1] - 2026-11-18
+
+### Added
+- **Voice with the screen off.** On a phone, voice now keeps going when you lock the screen
+  or switch to another app. While you are in voice, a notification shows how long you have
+  been talking, with **Mute**, **Speaker** and **Hang up** — on the lock screen too.
+- **Phone calls come first.** Answer a phone call while you are in voice and Weave puts
+  itself on hold: nobody hears you and you hear nothing. When you hang up, you are back
+  exactly as you were, muted or not.
+- **Headset button.** With a wired headset, one press mutes or unmutes you, and a long press
+  hangs up.
+- **Picture-in-picture.** Leave the app during a video call and it shrinks to a small
+  floating window that keeps playing, with your camera still on.
+- **Hold it to your ear.** In voice, lift the phone to your ear and the screen goes dark
+  and the sound moves to the earpiece, like a phone call. Lower it and both come back.
+- **Allow in the background.** Some phones stop apps they think are idle, even mid-call.
+  Settings → Voice & Audio now has a switch that keeps Weave running.
+- **Your phone rings.** A private call now rings with your own ringtone, as loud or as
+  silent as your phone is set to be. With the phone asleep or locked, the call fills the
+  screen with Answer and Decline; in use, it drops down from the top. On a computer, the
+  call window rings too.
+- **Huddles ring.** When somebody starts a private huddle you belong to, it rings for you
+  the same way, and **Join** takes you straight in. (Needs Weave Server 0.1.43.)
+- **Calling…** When you call somebody you hear it ringing at their end, and the room says
+  who you are calling, with Cancel beside it.
+- **Answering on a locked phone** shows just the call. Your rooms and messages stay hidden
+  until you unlock the phone.
+- **Calls ring even when Weave is closed.** With a free notification app such as ntfy
+  installed, your phone rings for a call or a huddle even after Weave has been closed or
+  the phone restarted, and Decline works without opening the app. Settings → Voice & Audio
+  says whether this is on for you. (Needs Weave Server 0.1.43.)
+- **Missed calls.** A call or huddle that rang while you were away leaves a notification,
+  with **Call back** or **Join**.
+
+### Changed
+- Your camera pauses while Weave is out of sight and comes back when you return, unless
+  the app is in picture-in-picture.
+- Music in other apps pauses while you are in voice and carries on when you leave.
+- When your phone wakes up or changes networks, Weave checks its connection at once
+  instead of noticing up to a minute later.
+
 ## [1.1.0] - 2026-11-18
 
 ### Added
