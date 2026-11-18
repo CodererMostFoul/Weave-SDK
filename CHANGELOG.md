@@ -40,6 +40,14 @@ written for the people using it rather than for the people building it.
   says whether this is on for you. (Needs Weave Server 0.1.43.)
 - **Missed calls.** A call or huddle that rang while you were away leaves a notification,
   with **Call back** or **Join**.
+- **Take the call here.** Signed in on your phone and your computer, a call rings on both.
+  Answer on one and the other stops ringing and says "You are in a call on another device",
+  with **Take it here** to move the call across.
+
+### Fixed
+- With Weave open on two devices, the one that did not answer a call no longer thinks it
+  is in the call (offering to end it), and no longer says "Call declined." when you
+  declined it yourself on the other one.
 
 ### Changed
 - Your camera pauses while Weave is out of sight and comes back when you return, unless

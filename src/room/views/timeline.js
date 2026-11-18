@@ -267,6 +267,17 @@ export function voiceNotice(status = {}) {
         };
     }
 
+    // Your call, live on another of your devices (answered on your phone, say). Moving it
+    // here is answering it here: the server moves the call and stands the other device down.
+    if (status.callElsewhere) {
+        return {
+            show: true,
+            tone: 'quiet',
+            text: 'You are in a call on another device.',
+            action: { label: 'Take it here', attr: 'data-call-here' },
+        };
+    }
+
     // On top of the lock screen, during a call. Your rooms and messages are hidden until the
     // phone is unlocked — answering a call must not hand your conversations to whoever is
     // holding the phone — and this is the way to unlock it.

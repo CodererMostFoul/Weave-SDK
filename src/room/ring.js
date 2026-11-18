@@ -98,6 +98,32 @@ export function declineFrame(ring) {
 const isRealId = (ring) => !String(ring.callId).startsWith('dm:');
 
 /**
+ * Whether a call is happening on THIS device, or on another one signed in as the same person.
+ *
+ * One account can be open on a phone and a computer at once, and the server tells every one
+ * of them about every call the account is party to: all of them ring, and all of them hear
+ * that the call went live or ended. Only the device that placed the call or answered it is in
+ * it. The others must stop ringing, must not believe they are in a call (and offer to end
+ * one they are not in), and must not announce "Call declined." to the person who has just
+ * declined it on their phone. They may offer to take the call over instead.
+ *
+ * A device standing in a call room is in that call even when it has forgotten which one — a
+ * page reloaded mid-call rejoins the room with no thread in mind — so the end of a call still
+ * walks it back out.
+ *
+ * @param {object} msg  dm:call_live or dm:call_ended
+ * @param {{ activeThreadId?: string|null, inCallRoom?: boolean }} here
+ *   the call this device placed or answered, and whether it stands in a call room now
+ * @returns {'here'|'elsewhere'|null} null for any other frame
+ */
+export function callPlace(msg = {}, { activeThreadId = null, inCallRoom = false } = {}) {
+    if (msg.type !== 'dm:call_live' && msg.type !== 'dm:call_ended') return null;
+    if (msg.threadId && activeThreadId === msg.threadId) return 'here';
+    if (msg.type === 'dm:call_ended' && inCallRoom && !activeThreadId) return 'here';
+    return 'elsewhere';
+}
+
+/**
  * Whether a call you placed has been settled, and how. Ringback plays until it is.
  *
  * @param {object} msg

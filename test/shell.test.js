@@ -439,3 +439,10 @@ test('on top of a locked phone, the notice is the way back to everything else', 
     assert.deepEqual(locked.action, { label: 'Unlock', attr: 'data-unlock' });
     assert.equal(voiceNotice({ state: 'live' }).show, false, 'and silent once unlocked');
 });
+
+test('your call on another device is said, with the way to bring it here', async () => {
+    const { voiceNotice } = await import('../src/room/views/timeline.js');
+    const there = voiceNotice({ state: 'idle', callElsewhere: true });
+    assert.equal(there.text, 'You are in a call on another device.');
+    assert.deepEqual(there.action, { label: 'Take it here', attr: 'data-call-here' });
+});

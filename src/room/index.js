@@ -26,7 +26,7 @@ import {
     voiceSessionFor, sameSession, pipAllowed, cameraOnHide, earArmed, holdTransition, networkReaction,
 } from './voice-session.js';
 import {
-    ringFromFrame, ringsEndedBy, answerFrame, declineFrame, outgoingOutcome,
+    ringFromFrame, ringsEndedBy, answerFrame, declineFrame, outgoingOutcome, callPlace,
 } from './ring.js';
 import { playTone } from '../media/call-tones.js';
 import { effectiveMute, onPushToTalkChange, muteButtonDisabled, pushToMuteAction } from '../media/mute-policy.js';
@@ -302,6 +302,8 @@ export function createRoom({ mount, api, link, user, server, features = [], repo
     let peerActions = null;
     let activeCallThreadId = null;
     let preCallChannelId = null;
+    // Your call, live on another of your devices: { threadId, callId }. See callPlace.
+    let callElsewhere = null;
     let ringModal = null;
     // Live rings by call id (ring.js decides what starts and ends one), the call this page
     // placed and is waiting on, and the sounds of both.
@@ -718,6 +720,7 @@ export function createRoom({ mount, api, link, user, server, features = [], repo
             forceMutedUntil: view.me.forceMutedUntil,
             micFallback: Date.now() < micFallbackUntil,
             calling: callingName(),
+            callElsewhere: Boolean(callElsewhere),
             locked: Boolean($('.app-shell', mount)?.hasAttribute('data-locked')),
         }));
         paintConnection({ ...view.connection, ...mediaStats });
@@ -1518,42 +1521,51 @@ export function createRoom({ mount, api, link, user, server, features = [], repo
         for (const callId of ringsEndedBy(msg, ringing.values())) endRing(callId);
         if (outgoingOutcome(msg, outgoingThreadId)) stopRingback();
         if (msg.type === 'private-channels:ring_cancel') return;
-        if (msg.type === 'dm:call_live') {
-            activeCallThreadId = msg.threadId;
+        if (msg.type === 'dm:call_live' || msg.type === 'dm:call_ended') {
+            const standingNow = state.raw.currentChannelId;
+            const place = callPlace(msg, {
+                activeThreadId: activeCallThreadId,
+                inCallRoom: Boolean(standingNow && !state.raw.channels.some((c) => c.id === standingNow)),
+            });
             ringModal?.close();
             ringModal = null;
-            paint();
-            return;
-        }
-        if (msg.type === 'dm:call_ended') {
-            ringModal?.close();
-            ringModal = null;
-            const wasMine = activeCallThreadId === msg.threadId || msg.threadId;
-            activeCallThreadId = null;
-            if (wasMine) {
-                const back = preCallChannelId;
-                preCallChannelId = null;
-                const standing = state.raw.currentChannelId;
-                const inCallRoom = standing && !state.raw.channels.some((c) => c.id === standing);
-                if (inCallRoom) {
-                    if (back && state.raw.channels.some((c) => c.id === back)) {
-                        link.noteChannel(back);
-                        link.send('move', { channelId: back });
-                    } else {
-                        voice.stop();
-                        link.noteChannel(null);
-                        link.send('leave');
-                    }
-                }
-                voiceState = {
-                    state: 'unavailable',
-                    message: msg.reason === 'declined' ? 'Call declined.'
-                        : msg.reason === 'no_answer' ? 'No answer.'
-                            : 'Call ended.',
-                };
+            if (msg.type === 'dm:call_live') {
+                // Placed or answered here: this device is in it. Otherwise it went live on
+                // another of yours, which this one only offers to take over.
+                callElsewhere = place === 'here' ? null : { threadId: msg.threadId, callId: msg.callId ?? null };
                 paint();
-                setTimeout(() => { voiceState = { state: 'idle' }; paint(); }, 4000);
+                return;
             }
+            if (callElsewhere?.threadId === msg.threadId) callElsewhere = null;
+            if (place !== 'here') {
+                // A call that rang here and was answered, declined or given up on elsewhere:
+                // nothing to leave, and nothing to announce to the person who did it.
+                paint();
+                return;
+            }
+            activeCallThreadId = null;
+            const back = preCallChannelId;
+            preCallChannelId = null;
+            const standing = state.raw.currentChannelId;
+            const inCallRoom = standing && !state.raw.channels.some((c) => c.id === standing);
+            if (inCallRoom) {
+                if (back && state.raw.channels.some((c) => c.id === back)) {
+                    link.noteChannel(back);
+                    link.send('move', { channelId: back });
+                } else {
+                    voice.stop();
+                    link.noteChannel(null);
+                    link.send('leave');
+                }
+            }
+            voiceState = {
+                state: 'unavailable',
+                message: msg.reason === 'declined' ? 'Call declined.'
+                    : msg.reason === 'no_answer' ? 'No answer.'
+                        : 'Call ended.',
+            };
+            paint();
+            setTimeout(() => { voiceState = { state: 'idle' }; paint(); }, 4000);
             return;
         }
 
@@ -1567,6 +1579,13 @@ export function createRoom({ mount, api, link, user, server, features = [], repo
                 voice.stop();
                 link.noteChannel(null);
                 voiceState = { state: 'elsewhere', roomId: state.raw.currentChannelId ?? lastVoiceRoomId };
+                // A call taken over by another of your devices: that one is in it now. This one
+                // only offers to take it back.
+                if (activeCallThreadId) {
+                    callElsewhere = { threadId: activeCallThreadId, callId: null };
+                    activeCallThreadId = null;
+                    preCallChannelId = null;
+                }
             }
             state.apply(msg);
             return;
@@ -2490,6 +2509,11 @@ export function createRoom({ mount, api, link, user, server, features = [], repo
                     forceMuted: Boolean(me.forceMuted),
                 }));
                 link.send('setMute', { muted: deafened || me.muted, deafened });
+                return;
+            }
+
+            if (event.target.closest('[data-call-here]')) {
+                takeCallHere();
                 return;
             }
 
@@ -3426,6 +3450,21 @@ export function createRoom({ mount, api, link, user, server, features = [], repo
             if (event.target.closest('[data-ring-accept]')) answerRing(live);
             else if (event.target.closest('[data-ring-decline]')) declineRing(live);
         });
+    }
+
+    /**
+     * Move your call from another of your devices to this one. Answering a live call is how
+     * that is asked: the server moves this device into the call and stands the other down.
+     */
+    function takeCallHere() {
+        const call = callElsewhere;
+        if (!call) return;
+        callElsewhere = null;
+        activeCallThreadId = call.threadId;
+        preCallChannelId ??= state.raw.currentChannelId;
+        link.send('dm:accept', { threadId: call.threadId, ...(call.callId ? { callId: call.callId } : {}) });
+        if (state.raw.dms.some((t) => t.id === call.threadId)) openDm(call.threadId);
+        paint();
     }
 
     /** Call somebody privately, and hear it ring at their end until they answer. */

@@ -5,7 +5,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-    RING_MS, callIdOf, ringFromFrame, ringsEndedBy, answerFrame, declineFrame, outgoingOutcome,
+    RING_MS, callIdOf, ringFromFrame, ringsEndedBy, answerFrame, declineFrame, outgoingOutcome, callPlace,
 } from '../src/room/ring.js';
 import { TONES, toneNotes } from '../src/media/call-tones.js';
 
@@ -88,4 +88,25 @@ test('ringback is a second of tone every five; the ring is a trill that repeats'
         + toneNotes('ring', 3_000, 8_000).filter((n) => n.start >= 3_000).length;
     assert.equal(split, whole);
     assert.deepEqual(toneNotes('nope', 0, 1000), []);
+});
+
+test('a call is in progress only on the device that placed or answered it', () => {
+    // Signed in on a phone and a computer: both rang, the phone answered.
+    const live = { type: 'dm:call_live', threadId: 't1', callId: 'abc' };
+    assert.equal(callPlace(live, { activeThreadId: 't1' }), 'here', 'the phone, which answered');
+    assert.equal(callPlace(live, { activeThreadId: null }), 'elsewhere', 'the computer, which only rang');
+    assert.equal(callPlace(live, { activeThreadId: 't9' }), 'elsewhere', 'a different call is not this one');
+
+    // Declined on the phone: the computer must not tell its owner "Call declined."
+    const declined = { type: 'dm:call_ended', threadId: 't1', reason: 'declined' };
+    assert.equal(callPlace(declined, { activeThreadId: null }), 'elsewhere');
+    assert.equal(callPlace(declined, { activeThreadId: 't1' }), 'here', 'the caller, who should hear it');
+
+    // A page reloaded mid-call stands in the call room without remembering which call: the end
+    // of the call must still walk it out.
+    const ended = { type: 'dm:call_ended', threadId: 't1', reason: 'left' };
+    assert.equal(callPlace(ended, { activeThreadId: null, inCallRoom: true }), 'here');
+    assert.equal(callPlace(ended, { activeThreadId: 't9', inCallRoom: true }), 'elsewhere',
+        'not when it knows it is in a different call');
+    assert.equal(callPlace({ type: 'dm:ring', threadId: 't1' }, { activeThreadId: 't1' }), null);
 });
