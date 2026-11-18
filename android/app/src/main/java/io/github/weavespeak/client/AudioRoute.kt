@@ -12,6 +12,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import androidx.core.telecom.CallEndpointCompat
 
 /**
  * Where call audio plays while this app is in voice: the output chosen in Settings when it is
@@ -33,10 +34,36 @@ import android.os.SystemClock
  * one — so another app's call is never rerouted by this one. And only what this class
  * changed is undone, when voice ends or the phone leaves call mode.
  */
-class AudioRoute(context: Context) {
+class AudioRoute private constructor(context: Context) {
 
     /** One place call audio can go, as the Settings picker lists it. */
     data class Output(val id: String, val label: String, val kind: String)
+
+    /**
+     * A call registered with Telecom routes its audio through Telecom, never through
+     * setCommunicationDevice (TelecomCallSession). While one is live, this class still decides
+     * WHERE the audio should go, and asks the router to put it there.
+     */
+    interface EndpointRouter {
+        val endpoints: List<CallEndpointCompat>
+        val current: CallEndpointCompat?
+        fun request(endpoint: CallEndpointCompat)
+    }
+
+    /** Set while a Telecom call holds the audio; null routes directly, as before. */
+    var router: EndpointRouter? = null
+        set(value) {
+            field = value
+            apply()
+        }
+
+    /**
+     * For this call only, never saved: the Speaker button in the call notification (true:
+     * loudspeaker; false: anything but), and the phone held to an ear (EarSensor), which
+     * outranks it while it lasts. Both end with the call.
+     */
+    private var speakerOverride: Boolean? = null
+    private var atEar = false
 
     private val audio = context.applicationContext.getSystemService(AudioManager::class.java)
     private val appContext = context.applicationContext
@@ -158,9 +185,43 @@ class AudioRoute(context: Context) {
         handler.post(tick)
     }
 
+    /** The notification's Speaker button: onto the loudspeaker, or off it if it is there now. */
+    fun toggleSpeaker() {
+        speakerOverride = current != KIND_SPEAKER
+        AppLog.write(appContext, "info", if (speakerOverride == true) "speaker chosen for this call" else "speaker turned off for this call")
+        apply()
+    }
+
+    /** The phone is at somebody's ear (true) or has left it (false). See EarSensor. */
+    fun ear(near: Boolean) {
+        if (near == atEar) return
+        atEar = near
+        apply()
+    }
+
+    /** Something Telecom reported moved (its endpoints, or where the call is now). */
+    fun routeChanged() = apply()
+
+    /** The choice that stands right now, in order: the ear, the Speaker button, Settings. */
+    private fun choiceAmong(listed: List<Output>): String? {
+        if (atEar) listed.firstOrNull { it.kind == KIND_EARPIECE }?.let { return it.id }
+        when (speakerOverride) {
+            true -> return listed.firstOrNull { it.kind == KIND_SPEAKER }?.id ?: KIND_SPEAKER
+            false -> return (
+                listed.firstOrNull { it.kind == KIND_WIRED || it.kind == KIND_USB }
+                    ?: listed.firstOrNull { it.kind == KIND_BLUETOOTH || it.kind == KIND_HEARING_AID }
+                    ?: listed.firstOrNull { it.kind == KIND_EARPIECE }
+                )?.id ?: KIND_EARPIECE
+            null -> {}
+        }
+        return preferred.ifEmpty { null }
+    }
+
     fun disengage() {
         if (!engaged) return
         engaged = false
+        speakerOverride = null
+        atEar = false
         handler.removeCallbacks(tick)
         audio.unregisterAudioDeviceCallback(devices)
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
@@ -187,7 +248,41 @@ class AudioRoute(context: Context) {
             current = "waiting"
             return
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) applyModern() else applyLegacy()
+        val telecom = router
+        when {
+            telecom != null -> applyTelecom(telecom)
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> applyModern()
+            else -> applyLegacy()
+        }
+    }
+
+    /**
+     * Through Telecom: the same choice as anywhere else, made among the endpoints Telecom
+     * offers, and asked for only when the call is not already there. Telecom answers every
+     * request with a route change, and asking once a second would make it flap.
+     */
+    private fun applyTelecom(telecom: EndpointRouter) {
+        val listed = telecom.endpoints.mapNotNull { e -> outputOf(e)?.let { it to e } }
+        if (listed.isEmpty()) return
+        val choice = choiceAmong(listed.map { it.first })
+        val want = listed.firstOrNull { it.first.id == choice }
+            ?: AUTOMATIC_KINDS.firstNotNullOfOrNull { kind -> listed.firstOrNull { it.first.kind == kind } }
+            ?: return
+        val now = telecom.current
+        if (now == null || now.identifier != want.second.identifier) telecom.request(want.second)
+        note(want.first)
+    }
+
+    private fun outputOf(endpoint: CallEndpointCompat): Output? = when (endpoint.type) {
+        CallEndpointCompat.TYPE_SPEAKER -> Output("speaker", "Loudspeaker", KIND_SPEAKER)
+        CallEndpointCompat.TYPE_EARPIECE -> Output("earpiece", "Earpiece (hold the phone to your ear)", KIND_EARPIECE)
+        CallEndpointCompat.TYPE_WIRED_HEADSET -> Output(KIND_WIRED, "Wired headset", KIND_WIRED)
+        CallEndpointCompat.TYPE_BLUETOOTH -> {
+            val name = endpoint.name.toString().trim()
+            if (name.isNotEmpty()) Output("$KIND_BLUETOOTH:$name", "$name (Bluetooth headset)", KIND_BLUETOOTH)
+            else Output(KIND_BLUETOOTH, "Bluetooth headset", KIND_BLUETOOTH)
+        }
+        else -> null
     }
 
     /** Android 12 and later: name the device outright. */
@@ -196,7 +291,8 @@ class AudioRoute(context: Context) {
         val available = audio.availableCommunicationDevices
         // The choice when it is connected; otherwise what automatic would pick, as for a
         // chosen microphone that has gone away. The choice is kept for when it comes back.
-        val chosen = if (preferred.isEmpty()) null else available.firstOrNull { outputOf(it)?.id == preferred }
+        val choice = choiceAmong(available.mapNotNull { outputOf(it) })
+        val chosen = if (choice == null) null else available.firstOrNull { outputOf(it)?.id == choice }
         val want = chosen
             ?: PREFERENCE.firstNotNullOfOrNull { type -> available.firstOrNull { it.type == type } }
             ?: return
@@ -213,7 +309,11 @@ class AudioRoute(context: Context) {
     private fun applyLegacy() {
         val all = audio.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
         val listed = all.mapNotNull { d -> outputOf(d) }
-        val chosen = if (preferred.isEmpty()) null else listed.firstOrNull { it.id == preferred }
+        val choice = choiceAmong(listed)
+        // Before Android 12 the earpiece is not always listed: it is simply what plays with
+        // both switches off and nothing worn, so it is named here when it is the choice.
+        val chosen = if (choice == null) null else listed.firstOrNull { it.id == choice }
+            ?: if (choice == KIND_EARPIECE) Output("earpiece", "Earpiece (hold the phone to your ear)", KIND_EARPIECE) else null
         val bluetooth = listed.firstOrNull { it.kind == KIND_BLUETOOTH }
         val worn = listed.firstOrNull { it.kind == KIND_WIRED || it.kind == KIND_USB }
         val speaker = listed.firstOrNull { it.kind == KIND_SPEAKER } ?: Output("speaker", "Loudspeaker", KIND_SPEAKER)
@@ -281,6 +381,11 @@ class AudioRoute(context: Context) {
 
     @Suppress("DEPRECATION")
     private fun release() {
+        // Telecom put the route where it is and takes it back when its call ends.
+        if (router != null) {
+            forced = false
+            return
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             if (forced) audio.clearCommunicationDevice()
         } else {
@@ -342,6 +447,15 @@ class AudioRoute(context: Context) {
     }
 
     companion object {
+        @Volatile private var shared: AudioRoute? = null
+
+        /** One per process: the plugin, the voice service and Telecom all mean the same route. */
+        fun of(context: Context): AudioRoute =
+            shared ?: synchronized(this) { shared ?: AudioRoute(context).also { shared = it } }
+
+        /** Automatic among Telecom's endpoints: anything worn first, then the loudspeaker. */
+        private val AUTOMATIC_KINDS = listOf("wired", "usb", "bluetooth", "hearing-aid", "speaker")
+
         private const val CHECK_MS = 1_000L
         private const val SETTLE_MS = 500L
         private const val SETTLE_TRIES = 20

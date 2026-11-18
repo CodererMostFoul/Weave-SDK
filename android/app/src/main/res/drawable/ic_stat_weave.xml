@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The status-bar icon: the same strand as the launcher icon (ic_launcher_foreground.xml) in its
+  own 24-unit box. Android draws a notification's small icon from its alpha alone, so it is
+  white on nothing, and a stroke rather than a filled shape reads at status-bar size.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:pathData="M3,14c2.5,0 2.5,-4 5,-4s2.5,4 5,4 2.5,-4 5,-4 2.5,4 3,4"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="2.4"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+</vector>

@@ -61,6 +61,14 @@ test('a real change is drawn', () => {
     assert.equal(decide({ lastSignature: before, tiles: [tile(), tile({ key: 'peer-b:webcam', slot: 'webcam' })] }), 'paint');
 });
 
+test('flipping your camera to the back one redraws your tile', () => {
+    // Nothing else about the tile moves, so without its own field the flip would be skipped
+    // and the back camera would keep the selfie mirror.
+    const mine = { key: 'self:webcam', slot: 'webcam', self: true, label: 'You' };
+    const front = stageSignature({ tiles: [tile(mine)], spotlight: null, heightPx: null });
+    assert.equal(decide({ lastSignature: front, tiles: [tile({ ...mine, unmirrored: true })] }), 'paint');
+});
+
 test('a change is DEFERRED while its tile is fullscreen', () => {
     // The heart of the bug: something changed, but drawing it would eject the viewer.
     assert.equal(

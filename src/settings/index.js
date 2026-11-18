@@ -248,6 +248,7 @@ export function createSettings({
             });
             case 'voice': return voicePanel({
                 prefs, devices, cameras, outputs, phoneOutputs, features,
+                pickCamera: platform.target !== 'mobile',
                 hotkeysGlobal: Boolean(platform.hotkeys?.available),
                 pushToMuteStatus: pushToMuteStatus(),
                 micTest: micTestState(),

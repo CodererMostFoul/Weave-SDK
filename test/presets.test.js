@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 
 import {
     screenShareSettings, bestFitFramerate, cameraConstraints, cameraEncodings,
+    defaultCameraFacing, cameraFacing, listCameras, canFlip, flipTarget, mirrorSelfCamera,
     SHARE_QUALITIES, SHARE_CONTENT, DEFAULT_SHARE_QUALITY, DEFAULT_SHARE_CONTENT,
     CAPTURE_FPS_CEILING, normaliseShareChoice, legacyShareChoice,
 } from '../src/media/presets.js';
@@ -183,4 +184,71 @@ test('a screen can be shared only where something can capture one', async () => 
     // The Android app brings its own capture, which counts with or without the browser API.
     assert.equal(canShareScreen({ mediaDevices: {}, platform: { screenCapture: { available: true } } }), true);
     assert.equal(canShareScreen({ mediaDevices: {}, platform: { screenCapture: { available: false } } }), false);
+});
+
+test('a phone starts on the selfie camera; a computer keeps the system default', () => {
+    assert.equal(defaultCameraFacing({ target: 'mobile' }), 'user');
+    assert.equal(defaultCameraFacing({ target: 'browser', touchOnly: true }), 'user', 'the browser build on a phone');
+    assert.equal(defaultCameraFacing({ target: 'desktop' }), null);
+    assert.equal(defaultCameraFacing({ target: 'browser' }), null);
+
+    // A lean, never a demand: a laptop webcam reports no facing, and exact would refuse it.
+    const phone = cameraConstraints({ facing: 'user' });
+    assert.deepEqual(phone.facingMode, { ideal: 'user' });
+    assert.equal(phone.deviceId, undefined);
+
+    // A named camera wins over the lean: Settings, or the camera a flip moved to.
+    const named = cameraConstraints({ device: 'cam-2', facing: 'user' });
+    assert.equal(named.deviceId.exact, 'cam-2');
+    assert.equal(named.facingMode, undefined);
+
+    assert.equal(cameraConstraints({}).facingMode, undefined, 'and no facing unless asked');
+});
+
+test('which way a camera faces, from its capabilities or its Android label', () => {
+    assert.equal(cameraFacing({ getCapabilities: () => ({ facingMode: ['environment'] }) }), 'environment');
+    assert.equal(cameraFacing({ label: 'camera2 1, facing front' }), 'user');
+    assert.equal(cameraFacing({ label: 'camera2 0, facing back' }), 'environment');
+    assert.equal(cameraFacing({ label: 'Logitech BRIO' }), null);
+    assert.equal(cameraFacing({ getCapabilities: () => ({ facingMode: [] }), label: 'HD Webcam' }), null);
+});
+
+test('only labelled cameras can be flipped between', () => {
+    const devices = [
+        { kind: 'audioinput', deviceId: 'mic', label: 'Mic' },
+        { kind: 'videoinput', deviceId: 'a', label: 'camera2 1, facing front' },
+        { kind: 'videoinput', deviceId: 'b', label: 'camera2 0, facing back' },
+        { kind: 'videoinput', deviceId: '', label: '' },
+    ];
+    const cams = listCameras(devices);
+    assert.deepEqual(cams.map((c) => [c.deviceId, c.facing]), [['a', 'user'], ['b', 'environment']]);
+    assert.ok(canFlip(cams));
+    assert.ok(!canFlip(cams.slice(0, 1)), 'one camera has nowhere to flip to');
+    assert.ok(!canFlip(listCameras([{ kind: 'videoinput', deviceId: 'x', label: '' }])),
+        'before camera access the list has no labels, and nothing to offer');
+});
+
+test('a flip goes to the main camera facing the other way, and back', () => {
+    // Phones list several back cameras; the system lists its main one first.
+    const cams = [
+        { deviceId: 'back-main', facing: 'environment' },
+        { deviceId: 'front', facing: 'user' },
+        { deviceId: 'back-wide', facing: 'environment' },
+    ];
+    assert.equal(flipTarget(cams, { deviceId: 'front', facing: 'user' }), 'back-main');
+    assert.equal(flipTarget(cams, { deviceId: 'back-main', facing: 'environment' }), 'front');
+    assert.equal(flipTarget(cams, { deviceId: 'back-wide' }), 'front', 'facing read from the list when the track does not say');
+});
+
+test('cameras that do not say which way they face are cycled through', () => {
+    const cams = [{ deviceId: 'a', facing: null }, { deviceId: 'b', facing: null }, { deviceId: 'c', facing: null }];
+    assert.equal(flipTarget(cams, { deviceId: 'a' }), 'b');
+    assert.equal(flipTarget(cams, { deviceId: 'c' }), 'a', 'round to the first');
+    assert.equal(flipTarget([{ deviceId: 'a', facing: 'user' }], { deviceId: 'a' }), null);
+});
+
+test('your own camera is mirrored unless it faces away from you', () => {
+    assert.ok(mirrorSelfCamera('user'));
+    assert.ok(mirrorSelfCamera(null), 'a desktop webcam keeps the mirror it always had');
+    assert.ok(!mirrorSelfCamera('environment'), 'a back camera shows the street the right way round');
 });

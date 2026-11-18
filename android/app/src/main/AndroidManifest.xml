@@ -31,6 +31,8 @@
             android:label="${appLabel}"
             android:theme="@style/AppTheme.NoActionBarLaunch"
             android:launchMode="singleTask"
+            android:supportsPictureInPicture="true"
+            android:resizeableActivity="true"
             android:exported="true">
 
             <intent-filter>
@@ -47,6 +49,17 @@
             </intent-filter>
 
         </activity>
+
+        <!--
+          Voice that keeps going with the screen off (VoiceService). phoneCall is what a calling
+          app holds on Android 14 and later; microphone keeps the microphone recording once
+          the app is out of sight (Android 11+), which it otherwise would not. Not exported:
+          only this app starts it.
+        -->
+        <service
+            android:name=".VoiceService"
+            android:exported="false"
+            android:foregroundServiceType="phoneCall|microphone" />
 
         <provider
             android:name="androidx.core.content.FileProvider"
@@ -66,6 +79,19 @@
     <!-- Chromium sets the call audio mode (and with it echo cancellation) through this. -->
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.CAMERA" />
+
+    <!-- Voice in the background: the service, its types, and the locks it holds while a call
+         lasts. MANAGE_OWN_CALLS is what lets a calling app register its calls with Android's
+         call system (Telecom) and hold a phoneCall service. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.MANAGE_OWN_CALLS" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- The call's controls live in a notification, which Android 13 asks about. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- "Keep Weave running in the background" in Settings asks with this. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <!-- Asked for, never required: a phone without a camera can still talk. -->
     <uses-feature android:name="android.hardware.camera" android:required="false" />

@@ -108,6 +108,12 @@ test('your own preview is muted and mirrored; a screen never is', () => {
 
     const someone = stageView({ tiles: [t('kes', 'webcam')] });
     assert.match(someone, /<video autoplay playsinline >/);
+
+    // A phone's back camera is shown the right way round; the mark is only ever on your own.
+    const back = stageView({ tiles: [t('self', 'webcam', { self: true, label: 'You', unmirrored: true })] });
+    assert.match(back, /tile self unmirrored/);
+    assert.doesNotMatch(cam, /unmirrored/);
+    assert.doesNotMatch(stageView({ tiles: [t('kes', 'webcam', { unmirrored: true })] }), /unmirrored/);
 });
 
 test('a hostile display name cannot become markup on a tile', () => {

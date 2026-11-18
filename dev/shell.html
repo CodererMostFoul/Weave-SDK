@@ -37,7 +37,8 @@ app.append(html(shell(state)));
 
 // What the room controller would do once it knew where you stood.
 if (state.mediaButtons) {
-    for (const id of ['camBtn', 'screenBtn']) document.getElementById(id).hidden = false;
+    // The flip button too: a camera that is on, on a phone with two, is the widest the dock gets.
+    for (const id of ['camBtn', 'flipBtn', 'screenBtn']) document.getElementById(id).hidden = false;
 }
 if (state.tiles) document.getElementById('stageSlot').innerHTML = stageView({ tiles: state.tiles });
 

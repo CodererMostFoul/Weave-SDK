@@ -138,6 +138,51 @@ function createBridge() {
             choose: (id) => WeaveNative.chooseAudioOutput({ id: String(id ?? '') }).catch(() => null),
         },
 
+        // Voice that keeps going with the screen off (VoiceService.kt): the page says what the
+        // call is, and hears back what was pressed on its notification, a headset, or the
+        // system (a phone call putting it on hold).
+        voiceSession: {
+            set: (state) => WeaveNative.voiceSession(state ? { on: true, ...state } : { on: false })
+                .catch(() => ({ ok: false })),
+            onAction(cb) {
+                const handle = WeaveNative.addListener('voiceAction', ({ action }) => cb(String(action ?? '')));
+                return () => { handle.then((h) => h.remove()).catch(() => {}); };
+            },
+        },
+
+        // Picture-in-picture: whether leaving should shrink the app rather than hide it, and
+        // being told when it has. Capacitor's own app-state events cannot say: a window in
+        // picture-in-picture is paused, not stopped, so it never reports going inactive.
+        pip: {
+            set: (allowed) => WeaveNative.pip({ allowed: Boolean(allowed) }).catch(() => null),
+            onChange(cb) {
+                const handle = WeaveNative.addListener('window', ({ pip }) => cb(Boolean(pip)));
+                return () => { handle.then((h) => h.remove()).catch(() => {}); };
+            },
+        },
+
+        // Hold-to-ear (EarSensor.kt): armed only while the page says the moment is right.
+        ear: {
+            arm: (armed) => WeaveNative.ear({ armed: Boolean(armed) }).catch(() => null),
+        },
+
+        background: {
+            status: () => WeaveNative.backgroundStatus().then((r) => Boolean(r?.allowed)).catch(() => null),
+            ask: () => WeaveNative.askBackground().catch(() => null),
+        },
+
+        notifications: {
+            status: () => WeaveNative.notificationStatus().then((r) => Boolean(r?.allowed)).catch(() => null),
+            ask: () => WeaveNative.askNotifications().then((r) => Boolean(r?.allowed)).catch(() => null),
+        },
+
+        // Whether voice is registered with Android's call system (TelecomCallSession.kt). Off
+        // until proven on a phone; here so it can be switched while testing.
+        telecom: {
+            get: () => WeaveNative.telecom({}).then((r) => Boolean(r?.on)).catch(() => false),
+            set: (on) => WeaveNative.telecom({ on: Boolean(on) }).then((r) => Boolean(r?.on)).catch(() => false),
+        },
+
         session: { resumeOnLaunch: true },
     };
 }

@@ -8,7 +8,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { resumeOutcome, RESUME_TIMEOUT_MS } from '../src/auth/resume.js';
+import { resumeOutcome, RESUME_TIMEOUT_MS, arriveInVoice, arrivalVoiceState } from '../src/auth/resume.js';
 import { createMobilePlatform } from '../src/platform/mobile.js';
 import { platform } from '../src/platform/index.js';
 
@@ -54,4 +54,28 @@ test('only a platform with a native token store resumes at all', () => {
     const base = { log() {}, tokens: {}, credentials: {}, links: {}, diagnostics: {} };
     assert.equal(createMobilePlatform(base, null).session.resumeOnLaunch, false,
         'the mobile build in a desktop browser has nothing to resume with');
+});
+
+test('a phone arrives on the conversation, never in voice', () => {
+    // Voice on Android is call mode for the whole phone. Opening the app is not a call.
+    assert.equal(arriveInVoice({ target: 'mobile', chosen: true }), false);
+    assert.equal(arriveInVoice({ target: 'mobile' }), false);
+    // Everywhere else it stays the person's own "Drop me straight in" choice.
+    assert.equal(arriveInVoice({ target: 'desktop', chosen: true }), true);
+    assert.equal(arriveInVoice({ target: 'browser', chosen: false }), false);
+    assert.equal(arriveInVoice({ target: 'browser' }), true, 'joining stays the default where it was');
+});
+
+test('arriving while this account talks from another device offers to bring voice here', () => {
+    const peers = [
+        { cid: 'phone', userId: 'me', channelId: null },
+        { cid: 'desk', userId: 'me', channelId: 'hall' },
+        { cid: 'kes', userId: 'kes', channelId: 'hall' },
+    ];
+    assert.deepEqual(arrivalVoiceState({ selfCid: 'phone', selfUserId: 'me', peers }),
+        { state: 'elsewhere', roomId: 'hall' });
+    // Only your own account counts, and only a device that is actually standing somewhere.
+    assert.equal(arrivalVoiceState({ selfCid: 'phone', selfUserId: 'me', peers: peers.filter((p) => p.cid !== 'desk') }), null);
+    assert.equal(arrivalVoiceState({ selfCid: 'phone', selfUserId: 'me', peers: [{ cid: 'tab', userId: 'me', channelId: null }] }), null);
+    assert.equal(arrivalVoiceState({ selfCid: 'phone', selfUserId: null, peers }), null);
 });

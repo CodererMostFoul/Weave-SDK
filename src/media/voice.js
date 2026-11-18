@@ -953,6 +953,20 @@ export function createVoice({
     /* ── producing video ─────────────────────────────────────────────────── */
 
 
+    /**
+     * Open a camera. `options.device` names one outright (a flip); without it the room's
+     * constraints decide, which on a phone means the selfie camera.
+     */
+    async function openCamera(options = {}) {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: getVideoConstraints(options) });
+        const [t] = stream.getVideoTracks();
+        // The device disappearing (unplugged, taken by another app) ends the share honestly
+        // instead of freezing the last frame for everyone. Only while it is still THE camera:
+        // a flip retires the old track, and a retired track ending must not turn off the new.
+        t.addEventListener('ended', () => { if (camStream === stream) disableWebcamInner(); });
+        return stream;
+    }
+
     async function enableWebcam() {
         camWanted = true;
         if (!device?.loaded) throw new Error('Voice is not ready yet.');
@@ -961,12 +975,8 @@ export function createVoice({
 
         const existing = camStream?.getVideoTracks?.().find((t) => t.readyState === 'live');
         const track = existing ?? await (async () => {
-            camStream = await navigator.mediaDevices.getUserMedia({ video: getVideoConstraints() });
-            const [t] = camStream.getVideoTracks();
-            // The device disappearing (unplugged, taken by another app) ends the share
-            // honestly instead of freezing the last frame for everyone.
-            t.addEventListener('ended', () => disableWebcamInner());
-            return t;
+            camStream = await openCamera();
+            return camStream.getVideoTracks()[0];
         })();
 
         camProducer = await sendTransport.produce({
@@ -985,8 +995,113 @@ export function createVoice({
         return camProducer;
     }
 
+    /**
+     * Move the live camera to another device — the front/back flip — without a new producer.
+     *
+     * The old camera is stopped BEFORE the new one is opened. Most phones cannot hold two
+     * cameras open at once, and asking for the second while the first runs fails with
+     * NotReadableError, so the switch-microphone order (open new, then stop old) does not
+     * work here. Viewers see the last frame for the moment in between; the producer, its
+     * simulcast layers and every consumer stay as they are, because replaceTrack swaps the
+     * source in place.
+     *
+     * If the new camera will not open, the old one is opened again. If even that fails, the
+     * camera is turned off honestly rather than left frozen, and the error is thrown on.
+     */
+    let cameraSwitch = null;
+    function switchCamera(deviceId) {
+        // One at a time: a second tap mid-switch would stop a camera the first is opening.
+        cameraSwitch ??= (async () => {
+            if (!camProducer || !camStream || !deviceId) return false;
+            const previous = activeCamera()?.deviceId ?? null;
+            for (const t of camStream.getTracks()) t.stop();
+            let stream;
+            try {
+                stream = await openCamera({ device: deviceId });
+            } catch (err) {
+                log('warn', `camera switch failed: ${err?.name ?? 'Error'}`);
+                try {
+                    stream = await openCamera(previous ? { device: previous } : {});
+                } catch {
+                    disableWebcamInner();
+                    throw err;
+                }
+                await adoptCamera(stream);
+                throw err;
+            }
+            await adoptCamera(stream);
+            return true;
+        })().finally(() => { cameraSwitch = null; });
+        return cameraSwitch;
+    }
+
+    async function adoptCamera(stream) {
+        // Turned off while the new camera was opening: nothing is left to feed, and a stream
+        // kept here would hold the camera (and its light) on with no way to stop it.
+        if (!camProducer) {
+            for (const t of stream.getTracks()) t.stop();
+            return;
+        }
+        camStream = stream;
+        await camProducer?.replaceTrack({ track: stream.getVideoTracks()[0] });
+        onVideo({ cid: 'self', slot: SLOTS.WEBCAM, stream });
+        onChange({ state: 'live', webcam: true, facing: cameraFacingNow() });
+    }
+
+    /**
+     * The app went out of sight with the camera on. Android takes a hidden app's camera away
+     * anyway; doing it here first means it is done deliberately — the producer is paused on
+     * the server, so viewers see the picture stop rather than a frozen frame, and the
+     * camera is released so its light goes off. The producer itself is kept, so coming back
+     * is a new track swapped in, not a new stream for everybody to re-subscribe to.
+     */
+    let camPaused = null;
+    async function pauseCamera() {
+        if (!camProducer || camPaused) return false;
+        camPaused = { deviceId: activeCamera()?.deviceId ?? null };
+        try { camProducer.pause(); } catch { /* closed under us */ }
+        link.send('pauseProducer', { slot: SLOTS.WEBCAM, paused: true });
+        for (const t of camStream?.getTracks() ?? []) t.stop();
+        return true;
+    }
+
+    /** Back in sight: the same camera again, swapped into the producer it left. */
+    async function resumeCamera() {
+        if (!camPaused) return false;
+        const { deviceId } = camPaused;
+        camPaused = null;
+        if (!camProducer) {
+            // Rebuilt while hidden (a reconnect closes producers): start it afresh, as the
+            // person never turned it off.
+            if (camWanted) {
+                camStream = null;
+                await enableWebcam();
+            }
+            return true;
+        }
+        const stream = await openCamera(deviceId ? { device: deviceId } : {});
+        await adoptCamera(stream);
+        try { camProducer?.resume(); } catch { /* closed under us */ }
+        link.send('pauseProducer', { slot: SLOTS.WEBCAM, paused: false });
+        return true;
+    }
+
+    /** What the live camera track reports about itself, for the flip and the mirror. */
+    function activeCamera() {
+        const [track] = camStream?.getVideoTracks?.() ?? [];
+        if (!track || track.readyState !== 'live') return null;
+        const s = track.getSettings?.() ?? {};
+        return { deviceId: s.deviceId ?? null, facing: s.facingMode ?? null, label: track.label || null };
+    }
+
+    function cameraFacingNow() {
+        const f = activeCamera()?.facing;
+        return f === 'user' || f === 'environment' ? f : null;
+    }
+
     function disableWebcamInner() {
         camWanted = false;
+        camPaused = null;
         if (camProducer) {
             link.send('closeProducer', { slot: SLOTS.WEBCAM });
             try { camProducer.close(); } catch { /* already closed */ }
@@ -1663,6 +1778,25 @@ export function createVoice({
         enableMic,
         enableWebcam,
         disableWebcam: () => disableWebcamInner(),
+        switchCamera,
+        activeCamera,
+        pauseCamera,
+        resumeCamera,
+        get cameraPaused() { return Boolean(camPaused); },
+
+        /**
+         * The phone changed networks — Wi-Fi to mobile data, or back. The media path was
+         * built on addresses that may no longer exist, and waiting for ICE to notice takes
+         * seconds of silence. An ICE restart on each transport finds the new path at once,
+         * without rebuilding anything. A server that cannot restart ICE is left to the
+         * existing failure detection, which rebuilds.
+         */
+        async networkChanged() {
+            if (!running || !canRestartIce()) return;
+            await repairIce('send').catch(() => {});
+            await repairIce('recv').catch(() => {});
+        },
+        get cameraFacing() { return cameraFacingNow(); },
         enableScreen,
         disableScreen: () => disableScreenInner(),
         get webcamOn() { return Boolean(camProducer); },

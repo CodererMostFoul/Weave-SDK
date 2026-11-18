@@ -87,6 +87,10 @@ dependencies {
     implementation "androidx.core:core:$androidxCoreVersion"
     implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
     implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
+    // Registers voice with Android's own call system: headset and car call buttons, and the
+    // system's hold for a phone call. See TelecomCallSession.
+    implementation "androidx.core:core-telecom:$coreTelecomVersion"
+    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:$coroutinesVersion"
     implementation project(':capacitor-android')
     implementation project(':capacitor-cordova-android-plugins')
 }

@@ -13,7 +13,7 @@ import './styles.css';
 import { createAuth } from './auth/index.js';
 import { platform, VERSION, noteOriginIsWeave, createStorage } from './platform/index.js';
 import { createApi } from './lib/api.js';
-import { resumeOutcome, RESUME_TIMEOUT_MS, RESUME_AUTOJOIN_KEY } from './auth/resume.js';
+import { resumeOutcome, RESUME_TIMEOUT_MS, RESUME_AUTOJOIN_KEY, arriveInVoice } from './auth/resume.js';
 import { runBack } from './ui/back.js';
 import { activeServer, rememberServer, setActive } from './server/store.js';
 import { parseDeepLink, openRegister } from './server/deeplink.js';
@@ -222,8 +222,11 @@ async function sendStreamReport(kind, payload) {
  * other is four columns edge to edge. So the room replaces the app element outright rather
  * than mounting inside the auth shell.
  */
-async function enterRoom({ api, user, token, server, autoJoin = true }) {
+async function enterRoom({ api, user, token, server, autoJoin: chosen = true }) {
     showRoute = null;
+    // Every way in — signing in, registering, signing back in at launch — asks the same
+    // question here, so a phone can never be dropped into voice by a path that forgot to.
+    const autoJoin = arriveInVoice({ target: platform.target, chosen });
     // Features are re-learned at every entry, never trusted from the stored snapshot.
     // The cached copy dates from when the server was ADDED — a server upgraded since
     // then would leave whole features (the DM rail, browsing) silently dead here.

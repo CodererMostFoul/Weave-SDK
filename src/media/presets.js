@@ -218,13 +218,102 @@ export function canShareScreen({ mediaDevices = null, platform = null } = {}) {
     return typeof mediaDevices?.getDisplayMedia === 'function';
 }
 
-/** The camera's own ladder is simpler: two sizes, two rates. */
-export function cameraConstraints({ device = null, res = '720', fps = 30 } = {}) {
+/**
+ * The camera's own ladder is simpler: two sizes, two rates.
+ *
+ * `device` is a camera named outright — the one chosen in Settings, or the one a flip moved
+ * to — and it wins. `facing` is only a lean, used when nothing is named: a phone asks for
+ * the selfie camera ('user'), because that is the camera somebody turning theirs on in a
+ * call means, and which one a WebView opens by default is the vendor's choice. It is
+ * `ideal`, never `exact`: a laptop's webcam reports no facing at all, and an exact facing
+ * would refuse it outright. Desktop and browser pass no facing and keep the system default.
+ */
+export function cameraConstraints({ device = null, res = '720', fps = 30, facing = null } = {}) {
     const height = res === '1080' ? 1080 : 720;
     return {
-        ...(device ? { deviceId: { exact: device } } : {}),
+        ...(device ? { deviceId: { exact: device } } : facing ? { facingMode: { ideal: facing } } : {}),
         width: { ideal: Math.round(height * (16 / 9)) },
         height: { ideal: height },
         frameRate: { ideal: Number(fps) || 30 },
     };
+}
+
+/**
+ * Which camera turning yours on should open when Settings names none. On a phone, the selfie
+ * camera, every time — a flip is for this call, not a new default. Anywhere else, whatever
+ * the system calls its default, as before: a laptop beside an external webcam would
+ * otherwise start preferring its built-in one. `touchOnly` is a device with no hovering
+ * pointer, which is how the browser build knows it is on a phone or tablet.
+ *
+ * @param {{ target?: string, touchOnly?: boolean }} env
+ */
+export function defaultCameraFacing({ target = 'browser', touchOnly = false } = {}) {
+    return target === 'mobile' || touchOnly ? 'user' : null;
+}
+
+/**
+ * Which way a camera faces: 'user' (towards you), 'environment' (away), or null when it does
+ * not say. Chromium reports it in the device's capabilities; Android's camera labels carry it
+ * too ("camera2 1, facing front"), which covers a WebView without getCapabilities().
+ */
+export function cameraFacing(device) {
+    const caps = typeof device?.getCapabilities === 'function' ? device.getCapabilities() : null;
+    const reported = caps?.facingMode?.[0] ?? device?.facing ?? null;
+    if (reported === 'user' || reported === 'environment') return reported;
+    const label = String(device?.label ?? '').toLowerCase();
+    if (/\bfront\b/.test(label)) return 'user';
+    if (/\b(back|rear)\b/.test(label)) return 'environment';
+    return null;
+}
+
+/**
+ * The cameras worth flipping between, in the order the system lists them: labelled video
+ * inputs only, since an unlabelled list means camera access has not been granted and the
+ * ids are not usable yet.
+ */
+export function listCameras(devices = []) {
+    return devices
+        .filter((d) => d?.kind === 'videoinput' && d.deviceId && d.label)
+        .map((d) => ({ deviceId: d.deviceId, label: d.label, facing: cameraFacing(d) }));
+}
+
+/** A flip needs somewhere to flip to. */
+export function canFlip(cameras = []) {
+    return cameras.length >= 2;
+}
+
+/**
+ * Where a flip goes from the camera that is live now.
+ *
+ * On a phone: the first camera facing the other way. Phones list several back cameras (wide,
+ * ultra-wide, zoom), and the system lists its main one first, so the first one found is the
+ * one a person means by "the back camera". Where no camera says which way it faces — two
+ * webcams on a desktop — the flip simply moves to the next one in the list, round to the
+ * first. Null when there is nowhere to go.
+ *
+ * @param {{deviceId:string, facing:string|null}[]} cameras
+ * @param {{deviceId?:string|null, facing?:string|null}} current  the live track's settings
+ */
+export function flipTarget(cameras = [], current = {}) {
+    if (!canFlip(cameras)) return null;
+    const here = cameras.find((c) => c.deviceId === current.deviceId) ?? null;
+    const facing = current.facing ?? here?.facing ?? null;
+    if (facing) {
+        const want = facing === 'user' ? 'environment' : 'user';
+        const other = cameras.find((c) => c.facing === want);
+        if (other) return other.deviceId;
+    }
+    const at = here ? cameras.indexOf(here) : -1;
+    const next = cameras[(at + 1) % cameras.length];
+    return next && next.deviceId !== current.deviceId ? next.deviceId : null;
+}
+
+/**
+ * Whether your own camera is shown mirrored. A selfie camera is, because a mirror is how
+ * people expect to see their own face; a camera pointing away is not, or the street you are
+ * showing reads backwards to you and every sign in it is unreadable. Unknown facing (a
+ * desktop webcam) keeps the mirror it always had.
+ */
+export function mirrorSelfCamera(facing) {
+    return facing !== 'environment';
 }

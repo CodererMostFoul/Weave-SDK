@@ -19,11 +19,16 @@ import { WeaveBackground, createMessageNoise, voiceNoise } from '../ui/weave-bac
 import { LoomRenderer } from '../ui/loom.js';
 import { createVoiceTraces } from '../ui/voice-trace.js';
 import { createVoice } from '../media/voice.js';
-import { describeLink } from '../net/link.js';
+import { arrivalVoiceState } from '../auth/resume.js';
+import { describeLink, LINK } from '../net/link.js';
+import {
+    voiceSessionFor, sameSession, pipAllowed, cameraOnHide, earArmed, holdTransition, networkReaction,
+} from './voice-session.js';
 import { effectiveMute, onPushToTalkChange, muteButtonDisabled, pushToMuteAction } from '../media/mute-policy.js';
 import { acceleratorFor, matchesKeydown } from '../ui/hotkey.js';
 import {
     screenShareSettings, normaliseShareChoice, cameraConstraints, cameraEncodings, canShareScreen,
+    defaultCameraFacing, listCameras, canFlip, flipTarget, mirrorSelfCamera,
 } from '../media/presets.js';
 import { settingsFor } from '../server/store.js';
 import { classify } from '../media/stream-report.js';
@@ -77,6 +82,12 @@ const SPEAKING_HOLD_MS = 450;
 
 /** How long to wait for an animation frame before painting anyway. */
 const PAINT_FLOOR_MS = 100;
+/**
+ * After the phone changes networks, how long to give the socket's probe before repairing the
+ * media path: a socket that turned out dead rejoins and rebuilds the media by itself, and only
+ * one that stayed live needs the ICE restart.
+ */
+const NETWORK_SETTLE_MS = 1_500;
 
 /**
  * How long a fullscreen tile may sit without a stream before it counts as over.
@@ -400,10 +411,18 @@ export function createRoom({ mount, api, link, user, server, features = [], repo
         onMicTelemetry(data) {
             try { window.dispatchEvent(new CustomEvent('weave:mic-level', { detail: data })); } catch { /* no DOM */ }
         },
-        getVideoConstraints: () => cameraConstraints({
-            device: prefs.camDevice ?? null,
+        // `options.device` is a flip's target. It is used for that one switch and never
+        // saved, so the next time the camera is turned on it starts where it always does.
+        getVideoConstraints: (options = {}) => cameraConstraints({
+            // The phone app has no camera picker (it starts on the front camera every time),
+            // so a choice saved before it lost the picker is not allowed to win either.
+            device: options.device ?? (platform.target === 'mobile' ? null : prefs.camDevice ?? null),
             res: prefs.camRes ?? '720',
             fps: Number(prefs.camFps ?? 30),
+            facing: defaultCameraFacing({
+                target: platform.target,
+                touchOnly: Boolean(window.matchMedia?.('(hover: none) and (pointer: coarse)')?.matches),
+            }),
         }),
         getVideoEncodings: () => cameraEncodings({ res: prefs.camRes ?? '720' }),
         // Whether the cheap repair is available at all. A server without it gets the old
@@ -426,6 +445,23 @@ export function createRoom({ mount, api, link, user, server, features = [], repo
         },
     });
     let voiceState = { state: 'idle' };
+    // The cameras this device has, as the flip button needs them. Read once the camera is on,
+    // because before camera access is granted the list has no labels and no usable ids.
+    let knownCameras = [];
+    async function refreshCameras() {
+        try {
+            knownCameras = listCameras(await navigator.mediaDevices.enumerateDevices());
+        } catch {
+            knownCameras = [];
+        }
+        paintMediaButtons();
+    }
+    /** Which way your live camera faces: as the track says, else as the device list says. */
+    function selfCameraFacing() {
+        if (voice.cameraFacing) return voice.cameraFacing;
+        const id = voice.activeCamera()?.deviceId;
+        return knownCameras.find((c) => c.deviceId === id)?.facing ?? null;
+    }
     // Until when to say that the chosen microphone was missing and the default stood in.
     let micFallbackUntil = 0;
     // The last real room voice stood in, for taking voice back after another device had it.
@@ -668,6 +704,7 @@ export function createRoom({ mount, api, link, user, server, features = [], repo
         paintRoomHead(view.room);
         paintMediaButtons();
         paintMessages(view.items);
+        syncPhone();
 
         // A repaint replaced those rows, so anything currently talking needs its ring back
         // immediately rather than at the next level sample.
@@ -800,6 +837,8 @@ export function createRoom({ mount, api, link, user, server, features = [], repo
                 key, cid, slot: slotName, label: 'You', self: true,
                 live, watched, stream: live ? stream : null,
                 chipName: me?.username ?? 'You',
+                // A back camera is shown as it is: mirrored, what it points at reads backwards.
+                unmirrored: slotName === 'webcam' && !mirrorSelfCamera(selfCameraFacing()),
             });
         }
 
@@ -1085,12 +1124,21 @@ export function createRoom({ mount, api, link, user, server, features = [], repo
             ? standing.allowVideo !== false
             : Boolean(state.raw.currentChannelId);
         const cam = $('#camBtn', mount);
+        const flip = $('#flipBtn', mount);
         const screen = $('#screenBtn', mount);
         if (cam) {
             cam.hidden = !canSend;
             cam.classList.toggle('on', voice.webcamOn);
             cam.setAttribute('aria-pressed', String(voice.webcamOn));
             cam.title = voice.webcamOn ? 'Turn your camera off' : 'Turn your camera on';
+        }
+        if (flip) {
+            // Only with the camera on: there is nothing to flip before, and a phone whose
+            // camera is off has no live picture to say which way it would face.
+            flip.hidden = !canSend || !voice.webcamOn || !canFlip(knownCameras);
+            const back = selfCameraFacing() === 'environment';
+            flip.title = back ? 'Switch to the front camera' : 'Switch camera';
+            flip.setAttribute('aria-label', flip.title);
         }
         if (screen) {
             // A phone browser has no screen capture, and the button used to be offered there
@@ -1581,6 +1629,9 @@ export function createRoom({ mount, api, link, user, server, features = [], repo
             // Standing in a room is being in voice: on Android that moves call audio off the
             // earpiece and onto the loudspeaker or a headset. Standing nowhere lets it go.
             platform.callAudio?.set(Boolean(msg.channel), prefs.callOutput ?? '');
+            // The notification's timer counts from arriving in this room.
+            if (!msg.channel) voiceSince = 0;
+            else if (msg.channel.id !== state.raw.currentChannelId || !voiceSince) voiceSince = Date.now();
             if (msg.channel) {
                 if (voiceState.state === 'elsewhere') voiceState = { state: 'idle' };
             } else if (msg.type === 'joined' && msg.elsewhere) {
@@ -1594,6 +1645,14 @@ export function createRoom({ mount, api, link, user, server, features = [], repo
                 preCallChannelId ??= state.raw.currentChannelId;
             }
             state.apply(msg);
+            // A phone always arrives standing nowhere. If this account is talking from another
+            // device right now, offer to bring the conversation here (Join voice here).
+            if (msg.type === 'joined' && !msg.channel && !msg.elsewhere && voiceState.state !== 'elsewhere') {
+                const elsewhere = arrivalVoiceState({
+                    selfCid: link.cid, selfUserId: state.raw.me?.id ?? null, peers: state.raw.peers.values(),
+                });
+                if (elsewhere) voiceState = elsewhere;
+            }
             // Both fetches land AFTER the joined frame has painted, so they must paint
             // again themselves — without it the rail and the badges sat empty until the
             // next unrelated event happened to repaint (caught by an E2E on a restart).
@@ -2140,20 +2199,7 @@ export function createRoom({ mount, api, link, user, server, features = [], repo
                 return;
             }
             if (event.target.closest('[data-dm-hangup]')) {
-                // Hanging up is walking home: the move empties the call room, which is
-                // what tells the server — and the other side — that the call is over.
-                const back = preCallChannelId;
-                preCallChannelId = null;
-                activeCallThreadId = null;
-                if (back && state.raw.channels.some((c) => c.id === back)) {
-                    link.noteChannel(back);
-                    link.send('move', { channelId: back });
-                } else {
-                    voice.stop();
-                    link.noteChannel(null);
-                    link.send('leave');
-                }
-                paint();
+                hangUpCall();
                 return;
             }
             if (event.target.closest('[data-add-member]')) {
@@ -2325,6 +2371,7 @@ export function createRoom({ mount, api, link, user, server, features = [], repo
 
             if (event.target.closest('[data-toggle-cam]')) {
                 (voice.webcamOn ? Promise.resolve(voice.disableWebcam()) : voice.enableWebcam())
+                    .then(() => { if (voice.webcamOn) refreshCameras(); })
                     .catch((err) => {
                         voiceState = {
                             state: 'no-mic',
@@ -2335,6 +2382,26 @@ export function createRoom({ mount, api, link, user, server, features = [], repo
                         paint();
                     })
                     .finally(() => paintMediaButtons());
+                return;
+            }
+
+            if (event.target.closest('[data-flip-cam]')) {
+                const next = flipTarget(knownCameras, {
+                    deviceId: voice.activeCamera()?.deviceId ?? null,
+                    facing: selfCameraFacing(),
+                });
+                if (!next) return;
+                voice.switchCamera(next)
+                    .catch((err) => {
+                        voiceState = {
+                            state: 'no-mic',
+                            message: voice.webcamOn
+                                ? 'That camera would not open, so the other one stayed on.'
+                                : `Camera unavailable: ${err?.message || err?.name || 'it would not open'}`,
+                        };
+                        paint();
+                    })
+                    .finally(() => { paintStage(); paintMediaButtons(); });
                 return;
             }
 
@@ -2380,17 +2447,7 @@ export function createRoom({ mount, api, link, user, server, features = [], repo
             }
 
             if (event.target.closest('[data-toggle-mic]')) {
-                const me = state.toShell().me;
-                // Under push-to-talk the key owns the stream, and under a server mute
-                // nothing this person can press owns it. The button is already disabled in
-                // the markup for both; this is the same rule for anything synthesising a
-                // click, and it asks the policy rather than restating it.
-                if (muteButtonDisabled({ pushToTalk: prefs.pushToTalk, forceMuted: me.forceMuted })) return;
-                const next = !me.muted;
-                // Locally first so the button responds immediately, then tell the room. The
-                // server's broadcast is what everyone else sees; this is what we hear.
-                voice.setMuted(next);
-                link.send('setMute', { muted: next, deafened: Boolean(me.deafened) });
+                setMicMuted(!state.toShell().me.muted);
                 return;
             }
 
@@ -2430,12 +2487,7 @@ export function createRoom({ mount, api, link, user, server, features = [], repo
             }
 
             if (event.target.closest('[data-leave]')) {
-                // Disconnect from VOICE, stay on the server — the tooltip always said
-                // "Leave the room" and it now means it. Sign out lives in settings.
-                voice.stop();
-                voiceState = { state: 'idle' };
-                link.noteChannel(null);
-                link.send('leave');
+                leaveVoice();
                 return;
             }
 
@@ -2982,6 +3034,220 @@ export function createRoom({ mount, api, link, user, server, features = [], repo
         input.focus();
     }
 
+    /* ── the dock's actions ──────────────────────────────────────────────── */
+
+    // Each is what one of the dock's buttons does, as a function, so that the same press
+    // arriving from somewhere else — the call notification on the lock screen, a headset's
+    // button, picture-in-picture — runs exactly the same code rather than a second copy.
+
+    /** Mute or unmute, unless something else owns the microphone right now. */
+    function setMicMuted(next) {
+        const me = state.toShell().me;
+        // Under push-to-talk the key owns the stream, and under a server mute nothing this
+        // person can press owns it. The button is already disabled in the markup for both;
+        // this is the same rule for anything synthesising a press, and it asks the policy
+        // rather than restating it.
+        if (muteButtonDisabled({ pushToTalk: prefs.pushToTalk, forceMuted: me.forceMuted })) return;
+        if (Boolean(me.muted) === Boolean(next)) return;
+        // Locally first so the button responds immediately, then tell the room. The
+        // server's broadcast is what everyone else sees; this is what we hear.
+        voice.setMuted(next);
+        link.send('setMute', { muted: Boolean(next), deafened: Boolean(me.deafened) });
+    }
+
+    /** Both at once, for a hold: silent both ways, announced as an ordinary mute. */
+    function setMutedAndDeafened({ muted, deafened }) {
+        const me = state.toShell().me;
+        voice.setDeafened(Boolean(deafened));
+        voice.setMuted(effectiveMute({
+            pushToTalk: Boolean(prefs.pushToTalk),
+            held: pttHeld,
+            muted: Boolean(muted),
+            deafened: Boolean(deafened),
+            forceMuted: Boolean(me.forceMuted),
+        }));
+        link.send('setMute', { muted: Boolean(muted) || Boolean(deafened), deafened: Boolean(deafened) });
+    }
+
+    /** Disconnect from VOICE and stay on the server. Sign out lives in settings. */
+    function leaveVoice() {
+        voice.stop();
+        voiceState = { state: 'idle' };
+        link.noteChannel(null);
+        link.send('leave');
+    }
+
+    /**
+     * End a private call. Hanging up is walking home: the move empties the call room, which
+     * is what tells the server — and the other side — that the call is over.
+     */
+    function hangUpCall() {
+        const back = preCallChannelId;
+        preCallChannelId = null;
+        activeCallThreadId = null;
+        if (back && state.raw.channels.some((c) => c.id === back)) {
+            link.noteChannel(back);
+            link.send('move', { channelId: back });
+        } else {
+            voice.stop();
+            link.noteChannel(null);
+            link.send('leave');
+        }
+        paint();
+    }
+
+    /** Whatever ends voice from here: a private call is hung up, a room is left. */
+    function hangUp() {
+        const standing = state.raw.currentChannelId;
+        const inCallRoom = standing && !state.raw.channels.some((c) => c.id === standing);
+        if (inCallRoom || activeCallThreadId) hangUpCall();
+        else if (standing) leaveVoice();
+    }
+
+    /* ── the phone around the room ──────────────────────────────────────── */
+
+    // On Android: the call's notification (and with it voice behind the lock screen),
+    // picture-in-picture, hold-to-ear, a phone call's hold, the camera while the app is
+    // hidden, and changing networks. voice-session.js decides; this carries it out. The
+    // browser and desktop platforms answer "not available" to every call here.
+
+    let voiceSince = 0;
+    let lastPhoneSession = null;
+    let lastPip = null;
+    let lastEar = null;
+    let callHold = { held: false, before: null };
+    let inPip = false;
+    let appVisible = true;
+    let askedNotifications = false;
+    let lastNetwork = null;
+    const phoneUnsubscribe = [];
+
+    function watchingAnything() {
+        return [...videoStreams.keys()].some((key) => !key.startsWith('self:') || watchingSelf.has(key));
+    }
+
+    /** Called after every paint: tells the phone what changed, and only what changed. */
+    function syncPhone() {
+        if (!platform.voiceSession?.available) return;
+        const standing = state.raw.currentChannelId;
+        const listed = state.raw.channels.find((c) => c.id === standing) ?? null;
+        const thread = activeCallThreadId ? state.raw.dms.find((t) => t.id === activeCallThreadId) : null;
+        const me = state.toShell().me;
+        const session = voiceSessionFor({
+            standing,
+            roomName: listed?.name ?? null,
+            callWith: thread ? (thread.other?.displayName || thread.other?.username || null) : null,
+            muted: Boolean(me.muted),
+            video: voice.webcamOn,
+            since: voiceSince,
+            held: callHold.held,
+            mic: voice.talking,
+        });
+        if (!sameSession(session, lastPhoneSession)) {
+            lastPhoneSession = session;
+            platform.voiceSession.set(session);
+            // The call's controls live in a notification, which Android 13 and later ask
+            // about. The first time voice starts is when that question makes sense.
+            if (session && !askedNotifications) {
+                askedNotifications = true;
+                platform.notifications?.ask?.();
+            }
+        }
+        const inVoice = Boolean(session);
+        const pip = pipAllowed({ inVoice, webcamOn: voice.webcamOn, watching: watchingAnything() });
+        if (pip !== lastPip) {
+            lastPip = pip;
+            platform.pip?.set(pip);
+        }
+        const ear = earArmed({
+            inVoice, webcamOn: voice.webcamOn, watching: watchingAnything(), visible: appVisible, pip: inPip,
+        });
+        if (ear !== lastEar) {
+            lastEar = ear;
+            platform.ear?.arm(ear);
+        }
+    }
+
+    /** A press on the notification, a headset, picture-in-picture, or the system's hold. */
+    function onVoiceAction(action) {
+        platform.log('info', `voice action from the phone: ${action}`);
+        if (action === 'mute') setMicMuted(true);
+        else if (action === 'unmute') setMicMuted(false);
+        else if (action === 'hangup') hangUp();
+        else if (action === 'hold' || action === 'resume') {
+            const me = state.toShell().me;
+            const next = holdTransition(callHold, action, { muted: me.muted, deafened: me.deafened });
+            callHold = next.hold;
+            if (next.apply) setMutedAndDeafened(next.apply);
+        }
+        paint();
+    }
+
+    function onAppState(active) {
+        appVisible = Boolean(active);
+        if (!active) {
+            // Android takes a hidden app's camera away regardless; picture-in-picture is a
+            // visible window and keeps it.
+            if (voice.webcamOn && cameraOnHide({ pip: inPip }) === 'pause') {
+                voice.pauseCamera().catch(() => {});
+            }
+        } else {
+            if (voice.cameraPaused) {
+                voice.resumeCamera().then(() => paintStage()).catch((err) => {
+                    platform.log('warn', `camera did not come back: ${err?.name ?? err}`);
+                    voice.disableWebcam();
+                    voiceState = { state: 'no-mic', message: 'Your camera was turned off while Weave was in the background.' };
+                    paint();
+                });
+            }
+            // Coming back is when a socket that died while frozen is found out, rather than
+            // at the heartbeat's second missed ping.
+            link.probe();
+        }
+        syncPhone();
+    }
+
+    function onPip(pip) {
+        inPip = Boolean(pip);
+        $('.app-shell', mount)?.classList.toggle('pip', inPip);
+        // Leaving picture-in-picture by closing it is going to the background: Android
+        // stops the activity, and onAppState hears that separately.
+        syncPhone();
+    }
+
+    function onNetwork(status) {
+        const reaction = networkReaction(lastNetwork, status);
+        lastNetwork = status;
+        if (reaction.probe) link.probe();
+        if (reaction.repair) {
+            // After the probe has had its chance: a socket that came back rejoined and rebuilt
+            // the media already, and one that stayed live only needs the path repaired.
+            setTimeout(() => {
+                if (link.state === LINK.LIVE && voice.ready) voice.networkChanged().catch(() => {});
+            }, NETWORK_SETTLE_MS);
+        }
+    }
+
+    function watchThePhone() {
+        if (platform.voiceSession?.available) phoneUnsubscribe.push(platform.voiceSession.onAction(onVoiceAction));
+        if (platform.pip?.available) phoneUnsubscribe.push(platform.pip.onChange(onPip));
+        if (platform.lifecycle?.available) phoneUnsubscribe.push(platform.lifecycle.onChange(onAppState));
+        if (platform.network?.available) {
+            platform.network.status().then((status) => { lastNetwork ??= status; }).catch(() => {});
+            phoneUnsubscribe.push(platform.network.onChange(onNetwork));
+        }
+    }
+
+    function unwatchThePhone() {
+        for (const off of phoneUnsubscribe.splice(0)) {
+            try { off?.(); } catch { /* already gone */ }
+        }
+        if (lastPhoneSession) platform.voiceSession?.set(null);
+        lastPhoneSession = null;
+        if (lastPip) platform.pip?.set(false);
+        if (lastEar) platform.ear?.arm(false);
+    }
+
     /* ── incoming calls ──────────────────────────────────────────────────── */
 
     function showRing({ threadId, from }) {
@@ -3258,6 +3524,7 @@ export function createRoom({ mount, api, link, user, server, features = [], repo
         mountLoom();
 
         state.subscribe(paint);
+        watchThePhone();
 
         link.onEvent = applyFrame;
         let linkWas = link.state;
@@ -3330,6 +3597,7 @@ export function createRoom({ mount, api, link, user, server, features = [], repo
             if (platform.hotkeys.available) platform.hotkeys.set('pushToMute', null).catch(() => {});
             voice.stop();
             platform.callAudio?.set(false);
+            unwatchThePhone();
             background?.destroy();
             loom?.destroy();
             bubbleRoom?.destroy();

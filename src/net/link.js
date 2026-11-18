@@ -50,6 +50,13 @@ const PING_INTERVAL_MS = 25_000;
 /** Two unanswered pings. One can be a hiccup; two in a row is a dead path. */
 const PONG_GRACE = 2;
 
+/**
+ * How long a probe waits for its pong. A phone that has just woken, or moved from Wi-Fi to
+ * mobile data, has a socket that may be dead without knowing it; the heartbeat would take up
+ * to 50s to say so (two missed pings), and voice is silent all that while.
+ */
+const PROBE_DEADLINE_MS = 5_000;
+
 /** Backoff: gentle at first, then out of the way. Full jitter, so clients do not sync up. */
 const RETRY_BASE_MS = 1_000;
 const RETRY_FACTOR = 1.8;
@@ -140,6 +147,7 @@ export function createLink({
 
     let outstandingPings = 0;
     let lastPingAt = 0;
+    let probeTimer = null;
     let rttMs = null;
     let cid = null;
     let wantOpen = false;
@@ -177,6 +185,12 @@ export function createLink({
         if (pingTimer) clearTimer(pingTimer);
         pingTimer = null;
         outstandingPings = 0;
+        endProbe();
+    }
+
+    function endProbe() {
+        if (probeTimer) clearTimer(probeTimer);
+        probeTimer = null;
     }
 
     function beat() {
@@ -446,6 +460,7 @@ export function createLink({
 
             case 'pong':
                 outstandingPings = 0;
+                endProbe();
                 if (typeof msg.t === 'number') rttMs = now() - msg.t;
                 if (state === LINK.DEGRADED) setState(LINK.LIVE, { force: true });
                 // The room-producer truth rides the pong; surface it as its own event so
@@ -520,6 +535,40 @@ export function createLink({
             }
             queue.push([type, payload]);
             return false;
+        },
+
+        /**
+         * Is the line alive? Ask now, rather than at the next heartbeat.
+         *
+         * For the moments the room has reason to doubt it: the app coming back to the front,
+         * the phone changing networks. A live link pings at once and, if no pong comes within
+         * the deadline, abandons the socket and reconnects immediately — not after the
+         * heartbeat's two missed pings, and not after a backoff, because nothing about this
+         * says the server is struggling. A link already waiting to retry retries now.
+         * Anything else (closed, connecting, a probe already out) is left alone.
+         *
+         * @returns {'probing'|'retrying'|'idle'} what it did, for tests and the log
+         */
+        probe({ deadlineMs = PROBE_DEADLINE_MS } = {}) {
+            if (!wantOpen) return 'idle';
+            if (state === LINK.RETRYING) {
+                attempt = 0;
+                armRetry(0);
+                return 'retrying';
+            }
+            if (!joined || probeTimer) return 'idle';
+            lastPingAt = now();
+            outstandingPings += 1;
+            const idleMs = readIdleMs();
+            raw('ping', { t: lastPingAt, ...(idleMs === null ? {} : { idleMs }) });
+            probeTimer = setTimer(() => {
+                probeTimer = null;
+                abandon(4001, 'probe timeout');
+                attempt = 0;
+                armRetry(0);
+                setState(LINK.RETRYING, { reason: 'probe', retryInMs: 0, attempt, force: true });
+            }, deadlineMs);
+            return 'probing';
         },
 
         /** Remember where we are, so a reconnect returns here rather than to the default. */

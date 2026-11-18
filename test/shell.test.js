@@ -303,6 +303,15 @@ test('a server-muted person cannot reach their own mute button', async () => {
     assert.ok(!free.includes('data-toggle-mic disabled'), 'nobody else is disabled by this');
 });
 
+test('the camera flip sits beside the camera, hidden until the room shows it', async () => {
+    const { selfBar } = await import('../src/room/views/sidebar.js');
+    const bar = selfBar({ username: 'kes', displayName: 'Kestrel' });
+    // Markup only: whether there is a live camera and a second one to flip to is the room's
+    // to know (paintMediaButtons), so the view always draws it hidden.
+    assert.match(bar, /id="camBtn"[\s\S]*id="flipBtn" data-flip-cam hidden/);
+    assert.match(bar, /aria-label="Switch camera"/);
+});
+
 test('the room says why a microphone stopped working, ahead of anything else', async () => {
     const { voiceNotice } = await import('../src/room/views/timeline.js');
 

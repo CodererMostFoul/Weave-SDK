@@ -739,3 +739,51 @@ test('the log hears about changes, not about every report', () => {
     assert.match(describeLink({ state: LINK.FAILED, failure: { code: 'unauthenticated' } }, LINK.CONNECTING).message,
         /failed: unauthenticated/);
 });
+
+test('a probe pings at once, and an answer leaves the link exactly as it was', () => {
+    const h = harness();
+    h.goLive();
+    const sock = h.sock;
+    const before = h.FakeSocket.opened;
+
+    assert.equal(h.link.probe(), 'probing');
+    assert.equal(sock.lastOf('ping')?.type, 'ping', 'not at the next 25 s heartbeat');
+    assert.equal(h.link.probe(), 'idle', 'one probe at a time');
+
+    sock.deliver({ type: 'pong', t: h.clock.now() });
+    h.clock.advance(10_000);
+    assert.equal(h.FakeSocket.opened, before, 'no reconnect after an answer');
+    assert.equal(h.link.state, LINK.LIVE);
+});
+
+test('a probe nobody answers reconnects within seconds, not after two missed heartbeats', () => {
+    const h = harness();
+    h.goLive();
+    const dead = h.sock;
+    h.link.probe();
+    h.clock.advance(5_000);
+
+    assert.ok(dead.closedWith, 'the silent socket is given up on');
+    const retry = h.states.find((s) => s.state === LINK.RETRYING);
+    assert.equal(retry?.reason, 'probe');
+    assert.equal(retry?.retryInMs, 0, 'immediately, with no backoff');
+    assert.notEqual(h.sock, dead, 'and a new socket is already on its way');
+    assert.equal(h.link.state, LINK.CONNECTING);
+});
+
+test('a probe while waiting to retry retries now; a closed link is left closed', () => {
+    const h = harness();
+    h.goLive();
+    h.sock.dropByServer(1006);
+    assert.equal(h.link.state, LINK.RETRYING);
+    const opened = h.FakeSocket.opened;
+
+    assert.equal(h.link.probe(), 'retrying');
+    h.clock.advance(0);
+    assert.equal(h.FakeSocket.opened, opened + 1, 'the network is back: no waiting out the backoff');
+
+    const closed = harness();
+    closed.goLive();
+    closed.link.close();
+    assert.equal(closed.link.probe(), 'idle');
+});

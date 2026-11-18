@@ -512,6 +512,9 @@ function phoneOutputField(prefs, phone) {
 export function voicePanel({
     prefs = {}, devices = [], cameras = [], outputs = [], phoneOutputs = null, features = [],
     hotkeysGlobal = false, pushToMuteStatus = null, micTest = {},
+    // False on the phone app, which always starts on the selfie camera and flips from the
+    // room: a camera saved here would quietly win over that, every call.
+    pickCamera = true,
 } = {}) {
     const hasAfk = features.includes('module.afk');
     return `
@@ -632,13 +635,16 @@ export function voicePanel({
 
     <h3 class="panel-section">Camera</h3>
 
-    ${cameras.length
-        ? choose({
-            id: 'camDevice', label: 'Camera',
-            value: prefs.camDevice ?? cameras[0]?.deviceId,
-            options: cameras.map((c) => [c.deviceId, c.label || 'Camera']),
-        })
-        : notYet('Camera selection', 'Device names are readable once a camera has been used.')}
+    ${!pickCamera
+        ? `<p class="setting-note">Your camera always starts on the front one. While it is on, the
+             switch-camera button beside it turns to the back.</p>`
+        : cameras.length
+            ? choose({
+                id: 'camDevice', label: 'Camera',
+                value: prefs.camDevice ?? cameras[0]?.deviceId,
+                options: cameras.map((c) => [c.deviceId, c.label || 'Camera']),
+            })
+            : notYet('Camera selection', 'Device names are readable once a camera has been used.')}
     ${choose({
         id: 'camRes', label: 'Camera quality',
         value: prefs.camRes ?? '720',

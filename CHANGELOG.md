@@ -7,6 +7,22 @@ All notable changes to Weave Client are recorded here. The format follows
 The newest entries are what the app shows under **What's new** after it updates, so they are
 written for the people using it rather than for the people building it.
 
+## [1.1.0] - 2026-11-18
+
+### Added
+- **Flip your camera.** With your camera on, a new button beside it switches between the
+  front and back cameras on a phone, or to your next camera on a computer with more than
+  one. Your camera always starts on the front one, and a back camera is shown the right
+  way round instead of mirrored.
+
+### Changed
+- **Opening Weave on a phone no longer starts voice.** The app opens on your conversations,
+  and voice starts when you tap a room, the way a call starts when you make one. Until
+  then your phone is left alone: the volume buttons set your media volume, other apps'
+  sound plays as normal, and a Bluetooth headset stays in its music mode. Leaving the room
+  hands all of that back. If you are already talking from your computer, the phone says so
+  and offers **Join voice here** to carry the conversation with you.
+
 ## [0.1.78] - 2026-11-12
 
 ### Added

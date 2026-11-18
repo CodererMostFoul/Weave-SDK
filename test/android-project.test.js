@@ -102,7 +102,9 @@ test('plain http is allowed for LAN servers, with only the system\'s certificate
 
 test('the native plugin is registered under the name the page calls', () => {
     const dir = 'android/app/src/main/java/io/github/weavespeak/client';
-    assert.match(read(`${dir}/WeaveNativePlugin.kt`), /@CapacitorPlugin\(name = "WeaveNative"\)/);
+    // The annotation may carry more (the notification permission it asks for), so only the
+    // name is pinned.
+    assert.match(read(`${dir}/WeaveNativePlugin.kt`), /@CapacitorPlugin\(\s*name = "WeaveNative"/);
     assert.match(read(`${dir}/MainActivity.kt`), /registerPlugin\(WeaveNativePlugin::class\.java\)/);
     assert.match(read('src/platform/native-capacitor.js'), /registerPlugin\('WeaveNative'\)/);
     // The stores the page may name, and no others.

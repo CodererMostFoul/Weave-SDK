@@ -114,7 +114,7 @@ const watchButton = (t, limited = false) => `
 const tile = (t, { main = false, spot = null, canReport = false, limited = false } = {}) => {
     const focused = main;   // `.focused` is the big-area styling the CSS already knows
     return `
-  <div class="tile${focused ? ' focused' : ''}${t.watched ? ' watched' : ''}${t.self ? ' self' : ''}${t.live ? '' : ' idle'}"
+  <div class="tile${focused ? ' focused' : ''}${t.watched ? ' watched' : ''}${t.self ? ' self' : ''}${t.self && t.unmirrored ? ' unmirrored' : ''}${t.live ? '' : ' idle'}"
        data-tile="${esc(t.key)}" role="${focused ? 'group' : 'button'}" tabindex="${focused ? '-1' : '0'}"
        aria-label="${esc(t.label)}${t.slot === 'screen' ? "'s screen" : ''}${focused ? ', watching' : ''}">
     ${t.live ? `<video autoplay playsinline ${t.self ? 'muted' : ''}></video>` : placeholder(t)}

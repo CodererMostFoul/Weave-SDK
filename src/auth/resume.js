@@ -22,6 +22,48 @@ export const RESUME_TIMEOUT_MS = 8_000;
 export const RESUME_AUTOJOIN_KEY = 'resume.autoJoin';
 
 /**
+ * Whether arriving puts you in voice.
+ *
+ * On a computer it is the person's own choice ("Drop me straight in"). On a phone it is
+ * never: standing in a room is being in voice, and on Android an open microphone is what
+ * puts the whole phone into call mode — the volume keys set call volume, other apps' sound
+ * goes quiet, a Bluetooth headset drops to its call profile. Opening Weave to read a message
+ * must not do that, any more than opening WhatsApp starts a call. So a phone arrives on the
+ * conversation, and voice starts when somebody taps a room or answers a call.
+ *
+ * Arriving only: a reconnect while in voice goes back to the room it stood in, whatever this
+ * says (net/link.js tracks where the session stands).
+ *
+ * @param {{ target?: string, chosen?: boolean }} arrival
+ */
+export function arriveInVoice({ target = 'browser', chosen = true } = {}) {
+    if (target === 'mobile') return false;
+    return chosen !== false;
+}
+
+/**
+ * What the room should say about voice when this device arrives standing nowhere.
+ *
+ * Usually nothing. But a phone opened while the same account is talking from a computer is
+ * the moment somebody may want to carry the conversation out of the door, and the room
+ * already has a way to offer exactly that: the "You are in voice on another device" notice
+ * with Join voice here. So when another of this account's connections stands in a room,
+ * say so, naming that room.
+ *
+ * @param {{ selfCid?: string|null, selfUserId?: string|null, peers?: Iterable<object> }} roster
+ * @returns {{ state: 'elsewhere', roomId: string } | null}
+ */
+export function arrivalVoiceState({ selfCid = null, selfUserId = null, peers = [] } = {}) {
+    if (!selfUserId) return null;
+    for (const peer of peers) {
+        if (peer?.userId === selfUserId && peer.cid !== selfCid && peer.channelId) {
+            return { state: 'elsewhere', roomId: peer.channelId };
+        }
+    }
+    return null;
+}
+
+/**
  * @param {{ user?: object|null, status?: number|null, message?: string|null }} result
  *   `user` from a successful GET /api/me, or the failed request's status (0 = no answer)
  */

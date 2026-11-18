@@ -74,10 +74,11 @@ export function signIn({ servers = [], activeId = null, instanceName = null } = 
         <span>Remember me next time <em>(${copy.rememberScope})</em></span>
       </label>` : ''}
 
+      ${platform.target === 'mobile' ? '' : `
       <label class="check-row">
         <input type="checkbox" name="autoJoin" checked>
         <span>Drop me straight in <em>— joins a room for you</em></span>
-      </label>
+      </label>`}
 
       <button class="btn primary wide" type="submit">
         Sign In <span aria-hidden="true">→</span>

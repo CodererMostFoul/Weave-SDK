@@ -1,15 +1,26 @@
 package io.github.weavespeak.client
 
+import android.Manifest
+import android.annotation.SuppressLint
 import android.content.Context
+import android.content.Intent
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
+import android.net.Uri
+import android.os.Build
+import android.os.PowerManager
+import android.provider.Settings
+import androidx.core.app.NotificationManagerCompat
 import com.getcapacitor.JSArray
 import com.getcapacitor.JSObject
+import com.getcapacitor.PermissionState
 import com.getcapacitor.Plugin
 import com.getcapacitor.PluginCall
 import com.getcapacitor.PluginMethod
 import com.getcapacitor.annotation.CapacitorPlugin
+import com.getcapacitor.annotation.Permission
+import com.getcapacitor.annotation.PermissionCallback
 
 /**
  * Everything the page needs from Android that no stock Capacitor plugin gives it, behind one
@@ -19,19 +30,34 @@ import com.getcapacitor.annotation.CapacitorPlugin
  *  - log / readLog: the app log (AppLog).
  *  - networkStatus and a "network" event: so a reconnect can start the moment the phone moves
  *    between Wi-Fi and mobile data, rather than when the heartbeat next times out.
+ *  - callAudio / audioOutputs / chooseAudioOutput: where call audio plays (AudioRoute).
+ *  - voiceSession and a "voiceAction" event: voice that keeps going with the screen off
+ *    (VoiceService), and the controls that come back from its notification, a headset or
+ *    the system (VoiceBus).
+ *  - pip and a "window" event: picture-in-picture during a video call.
+ *  - ear: hold-to-ear (EarSensor).
+ *  - backgroundStatus / askBackground, notificationStatus / askNotifications: the two
+ *    permissions voice in the background depends on.
  *
  * Plugin methods run on Capacitor's plugin thread, not the main thread, so the Keystore and
  * file work here does not stall the UI.
  */
-@CapacitorPlugin(name = "WeaveNative")
+@CapacitorPlugin(
+    name = "WeaveNative",
+    permissions = [Permission(alias = "notifications", strings = [Manifest.permission.POST_NOTIFICATIONS])],
+)
 class WeaveNativePlugin : Plugin() {
 
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
     // Call audio on the loudspeaker (or a headset) while the page is in voice. See AudioRoute.
-    private val route by lazy { AudioRoute(context) }
+    private val route by lazy { AudioRoute.of(context) }
+    private val ear by lazy { EarSensor(context) }
 
     override fun load() {
+        VoiceBus.listener = { action -> notifyListeners("voiceAction", JSObject().apply { put("action", action) }) }
+        VoiceBus.windowListener = { pip -> notifyListeners("window", JSObject().apply { put("pip", pip) }) }
+
         val connectivity = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) = report(connectivity)
@@ -42,7 +68,15 @@ class WeaveNativePlugin : Plugin() {
         networkCallback = callback
     }
 
+    // Nobody holds a phone to their ear with the app in the background.
+    override fun handleOnStop() {
+        ear.arm(false)
+    }
+
     override fun handleOnDestroy() {
+        VoiceBus.listener = null
+        VoiceBus.windowListener = null
+        ear.arm(false)
         route.disengage()
         val callback = networkCallback ?: return
         networkCallback = null
@@ -183,6 +217,117 @@ class WeaveNativePlugin : Plugin() {
             route.prefer(id)
             call.resolve(JSObject().apply { put("route", route.current) })
         }
+    }
+
+    /**
+     * The page is in voice (on: true, with what the notification should say) or has left it.
+     * Starting only works from the foreground, which is where joining voice happens; a start
+     * Android refuses is answered with ok: false and the call simply goes on in front.
+     */
+    @PluginMethod
+    fun voiceSession(call: PluginCall) {
+        val on = call.getBoolean("on") ?: false
+        bridge.executeOnMainThread {
+            if (!on) {
+                VoiceService.end()
+                call.resolve(JSObject().apply { put("ok", true) })
+                return@executeOnMainThread
+            }
+            val session = VoiceService.Session(
+                title = call.getString("title")?.take(80)?.ifBlank { null } ?: "Weave",
+                kind = if (call.getString("kind") == "call") "call" else "room",
+                muted = call.getBoolean("muted") ?: false,
+                video = call.getBoolean("video") ?: false,
+                since = call.getDouble("since")?.toLong() ?: System.currentTimeMillis(),
+                held = call.getBoolean("held") ?: false,
+            )
+            val ok = try {
+                VoiceService.show(context, session)
+                true
+            } catch (e: Exception) {
+                // ForegroundServiceStartNotAllowedException and friends: started from the
+                // background. Said, not thrown: there is nothing for the page to do about it.
+                AppLog.write(context, "warn", "voice service not started: $e")
+                false
+            }
+            // Picture-in-picture's Mute button names the state it would change to.
+            (activity as? MainActivity)?.applyPipParams()
+            call.resolve(JSObject().apply { put("ok", ok) })
+        }
+    }
+
+    /** Whether leaving the app now should shrink it to picture-in-picture. */
+    @PluginMethod
+    fun pip(call: PluginCall) {
+        VoiceBus.pipAllowed = call.getBoolean("allowed") ?: false
+        bridge.executeOnMainThread {
+            (activity as? MainActivity)?.applyPipParams()
+            call.resolve(JSObject().apply { put("available", Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) })
+        }
+    }
+
+    /** Hold-to-ear may listen now (in voice, camera off, app on screen) or must not. */
+    @PluginMethod
+    fun ear(call: PluginCall) {
+        val armed = call.getBoolean("armed") ?: false
+        bridge.executeOnMainThread {
+            ear.arm(armed)
+            call.resolve(JSObject().apply { put("available", ear.available) })
+        }
+    }
+
+    /**
+     * Whether Telecom (Android's call system) carries voice on this install. Off until proven
+     * on a phone; switchable while testing without a rebuild. Takes effect on the next join.
+     */
+    @PluginMethod
+    fun telecom(call: PluginCall) {
+        call.getBoolean("on")?.let { TelecomCallSession.setEnabled(context, it) }
+        call.resolve(JSObject().apply { put("on", TelecomCallSession.enabled(context)) })
+    }
+
+    /** Whether the system's battery optimisation leaves Weave alone in the background. */
+    @PluginMethod
+    fun backgroundStatus(call: PluginCall) {
+        val power = context.getSystemService(PowerManager::class.java)
+        call.resolve(JSObject().apply { put("allowed", power.isIgnoringBatteryOptimizations(context.packageName)) })
+    }
+
+    /**
+     * Ask to be left out of battery optimisation. Samsung and others put apps they consider
+     * idle to sleep regardless of a foreground service; this is the one switch that stops it.
+     */
+    @SuppressLint("BatteryLife")
+    @PluginMethod
+    fun askBackground(call: PluginCall) {
+        val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:${context.packageName}"))
+        try {
+            activity.startActivity(intent)
+            call.resolve(JSObject().apply { put("asked", true) })
+        } catch (e: Exception) {
+            activity.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+            call.resolve(JSObject().apply { put("asked", false) })
+        }
+    }
+
+    /** Whether notifications may show: the call's controls in the background live in one. */
+    @PluginMethod
+    fun notificationStatus(call: PluginCall) {
+        call.resolve(JSObject().apply { put("allowed", NotificationManagerCompat.from(context).areNotificationsEnabled()) })
+    }
+
+    @PluginMethod
+    fun askNotifications(call: PluginCall) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU || getPermissionState("notifications") == PermissionState.GRANTED) {
+            notificationStatus(call)
+            return
+        }
+        requestPermissionForAlias("notifications", call, "notificationsAnswered")
+    }
+
+    @PermissionCallback
+    private fun notificationsAnswered(call: PluginCall) {
+        notificationStatus(call)
     }
 
     @PluginMethod

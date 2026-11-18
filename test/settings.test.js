@@ -983,3 +983,14 @@ test("the line under a phone's output picker says where sound is going", () => {
         'Playing through: Loudspeaker');
     assert.match(phoneOutputNow({ inVoice: true, current: 'waiting', outputs: [] }), /Waiting/);
 });
+
+test('the phone app offers no camera picker: it starts on the front camera every time', () => {
+    const cameras = [{ deviceId: 'a', label: 'camera2 1, facing front' }, { deviceId: 'b', label: 'camera2 0, facing back' }];
+    const desk = voicePanel({ prefs: {}, cameras });
+    assert.match(desk, /data-setting="camDevice"|id="camDevice"/);
+
+    const phone = voicePanel({ prefs: { camDevice: 'b' }, cameras, pickCamera: false });
+    assert.doesNotMatch(phone, /camDevice/, 'a saved choice cannot come back through the panel');
+    assert.match(phone, /always starts on the front one/);
+    assert.match(phone, /id="camRes"|camRes/, 'quality and frame rate still apply');
+});

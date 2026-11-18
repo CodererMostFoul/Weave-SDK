@@ -259,6 +259,8 @@ export function selfBar(me = {}) {
         <button type="button" class="round-btn media-btn" id="camBtn" data-toggle-cam hidden
                 title="Turn your camera on" aria-label="Turn your camera on"
                 aria-pressed="false">${icons.camera}</button>
+        <button type="button" class="round-btn media-btn" id="flipBtn" data-flip-cam hidden
+                title="Switch camera" aria-label="Switch camera">${icons.flipCamera}</button>
         <button type="button" class="round-btn media-btn" id="screenBtn" data-toggle-screen hidden
                 title="Share your screen" aria-label="Share your screen"
                 aria-pressed="false">${icons.screen}</button>

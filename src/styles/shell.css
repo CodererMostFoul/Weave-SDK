@@ -888,6 +888,8 @@
 /* A mirror for your own face only — everyone else must read your screen's text. */
 .tile.self video { transform: scaleX(-1); }
 .tile.self[data-tile$=":screen"] video { transform: none; }
+/* …and not for a phone's back camera, or the street it is showing reads backwards. */
+.tile.self.unmirrored video { transform: none; }
 
 /* The tile's control bar: invisible until the pointer arrives, and it LINGERS —
    the fade waits three seconds after the pointer leaves, so reaching for the volume

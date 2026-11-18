@@ -29,6 +29,8 @@ export function stageSignature({ tiles = [], spotlight = null, heightPx = null, 
         Boolean(watchLimitReached),
         tiles.map((t) => [
             t.key, t.label, t.chipName, t.slot, Boolean(t.self), Boolean(t.live), Boolean(t.watched),
+            // A flip to the back camera changes nothing else on the tile, and must still redraw it.
+            Boolean(t.unmirrored),
             t.frame ? t.frame.length : 0,
             t.audio ? [t.audio.slot, Boolean(t.audio.muted), t.audio.volume ?? null] : null,
         ]),

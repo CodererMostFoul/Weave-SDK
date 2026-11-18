@@ -49,6 +49,22 @@ const absent = {
         async outputs() { return null; },
         async choose() { return null; },
     },
+    // A browser tab has no way to keep voice alive behind the lock screen, no notification
+    // controls, no picture-in-picture of its own and no proximity sensor: each answers
+    // honestly that it is not here, and every call on it still works.
+    voiceSession: {
+        available: false,
+        async set() { return { ok: false }; },
+        onAction() { return () => {}; },
+    },
+    pip: {
+        available: false,
+        async set() { return null; },
+        onChange() { return () => {}; },
+    },
+    ear: { available: false, async arm() { return null; } },
+    background: { available: false, async status() { return null; }, async ask() { return null; } },
+    notifications: { available: false, async status() { return null; }, async ask() { return null; } },
 };
 
 /**
@@ -138,6 +154,12 @@ export function createMobilePlatform(base, bridge = null, timers = {}) {
         lifecycle,
         network: offered('network', absent.network),
         callAudio: offered('callAudio', absent.callAudio),
+        voiceSession: offered('voiceSession', absent.voiceSession),
+        pip: offered('pip', absent.pip),
+        ear: offered('ear', absent.ear),
+        background: offered('background', absent.background),
+        notifications: offered('notifications', absent.notifications),
+        ...(bridge?.telecom ? { telecom: bridge.telecom } : {}),
         session: bridge?.session ? { ...bridge.session } : absent.session,
 
         log,

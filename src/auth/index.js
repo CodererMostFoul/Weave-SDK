@@ -214,7 +214,8 @@ export function createAuth({ mount, onSignedIn }) {
             const button = $('button[type="submit"]', form);
             const username = form.username.value.trim();
             const password = form.password.value;
-            const autoJoin = form.autoJoin.checked;
+            // A phone has no such box: it never arrives in voice (see arriveInVoice).
+            const autoJoin = form.autoJoin ? form.autoJoin.checked : true;
 
             if (!username || !password) {
                 setFormMessage(form, 'Enter your username and password.');
