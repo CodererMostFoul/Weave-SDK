@@ -26,7 +26,7 @@ import {
     voiceSessionFor, sameSession, pipAllowed, cameraOnHide, earArmed, holdTransition, networkReaction,
 } from './voice-session.js';
 import {
-    ringFromFrame, ringsEndedBy, answerFrame, declineFrame, outgoingOutcome, callPlace,
+    RING_MS, ringFromFrame, ringsEndedBy, answerFrame, declineFrame, outgoingOutcome, callPlace,
 } from './ring.js';
 import { playTone } from '../media/call-tones.js';
 import { effectiveMute, onPushToTalkChange, muteButtonDisabled, pushToMuteAction } from '../media/mute-policy.js';
@@ -311,6 +311,7 @@ export function createRoom({ mount, api, link, user, server, features = [], repo
     let ringModalId = null;
     let ringTone = null;
     let ringback = null;
+    let ringbackTimer = null;
     let outgoingThreadId = null;
     let lockedNow = false;
     let lastOverLock = null;
@@ -1511,6 +1512,17 @@ export function createRoom({ mount, api, link, user, server, features = [], repo
         }
         if (msg.type === 'dm:accepted') return;   // our own echo carries the message frame
 
+        // A call that never started (the server could not move us into its room) is refused
+        // with an error, not ended with dm:call_ended, so ringback has to be told here.
+        if (msg.type === 'error' && msg.code === 'call_failed' && outgoingThreadId) {
+            activeCallThreadId = null;
+            stopRingback();
+            voiceState = { state: 'unavailable', message: msg.message || 'The call could not be started.' };
+            paint();
+            setTimeout(() => { voiceState = { state: 'idle' }; paint(); }, 4000);
+            return;
+        }
+
         if (msg.type === 'dm:ring' || msg.type === 'private-channels:ring') {
             startRing(ringFromFrame(msg, Date.now(),
                 (id) => state.raw.channels.find((c) => c.id === id)?.name ?? null));
@@ -1527,8 +1539,9 @@ export function createRoom({ mount, api, link, user, server, features = [], repo
                 activeThreadId: activeCallThreadId,
                 inCallRoom: Boolean(standingNow && !state.raw.channels.some((c) => c.id === standingNow)),
             });
-            ringModal?.close();
-            ringModal = null;
+            // The ring window is not closed here: ringsEndedBy above ended this call's ring by
+            // its id, and closing whatever window is up would also take down a huddle ringing
+            // at the same time, with its tone still going.
             if (msg.type === 'dm:call_live') {
                 // Placed or answered here: this device is in it. Otherwise it went live on
                 // another of yours, which this one only offers to take over.
@@ -2236,7 +2249,11 @@ export function createRoom({ mount, api, link, user, server, features = [], repo
                 return;
             }
             if (event.target.closest('[data-dm-call]')) {
-                if (state.raw.activeDmId) placeCall(state.raw.activeDmId);
+                // Calling somebody you are already in a call with on your phone is bringing
+                // that call here. The server would only move it, with no call_live after, so
+                // placing it afresh would leave ringback playing into a call already answered.
+                if (callElsewhere && callElsewhere.threadId === state.raw.activeDmId) takeCallHere();
+                else if (state.raw.activeDmId) placeCall(state.raw.activeDmId);
                 return;
             }
             if (event.target.closest('[data-dm-hangup]')) {
@@ -3330,14 +3347,34 @@ export function createRoom({ mount, api, link, user, server, features = [], repo
     function startRing(ring) {
         if (!ring?.callId || ringing.has(ring.callId)) return;
         const timer = setTimeout(() => endRing(ring.callId), Math.max(1_000, ring.expiresAt - Date.now() + 1_000));
-        ringing.set(ring.callId, { ...ring, timer });
+        ringing.set(ring.callId, { ...ring, timer, silenced: false });
         if (platform.calls?.available) {
             platform.calls.ring({ ...ring, serverId: server?.id ?? null });
         } else {
-            ringTone ??= playTone('ring');
+            syncRingTone();
         }
         showRingModal(ring);
         syncPhone();
+    }
+
+    /**
+     * One tone however many rings are live, and none once every one of them is dismissed.
+     *
+     * The ring window closes on Escape and on a click beside it, as every dialog here does.
+     * That silences the ring on this device, the way a phone's side button does, rather than
+     * declining it: the call goes on ringing on your other devices and for the caller, and
+     * still ends itself when they give up. A dismissed window that went on ringing for the
+     * rest of 45 seconds, with nothing left on screen to stop it, was the alternative. On the
+     * phone app the phone itself rings (IncomingCall.kt), so there is no page tone to manage.
+     */
+    function syncRingTone() {
+        if (platform.calls?.available) return;
+        if ([...ringing.values()].some((ring) => !ring.silenced)) {
+            ringTone ??= playTone('ring');
+        } else {
+            ringTone?.stop();
+            ringTone = null;
+        }
     }
 
     function endRing(callId) {
@@ -3346,11 +3383,14 @@ export function createRoom({ mount, api, link, user, server, features = [], repo
         clearTimeout(ring.timer);
         ringing.delete(callId);
         platform.calls?.end(callId);
-        if (!ringing.size) {
-            ringTone?.stop();
-            ringTone = null;
+        syncRingTone();
+        if (ringModalId === callId) {
+            ringModal?.close();
+            // Two at once (a call while a huddle rings): the one still waiting gets the window
+            // back, or it would ring on with nothing to answer it from.
+            const waiting = [...ringing.values()].find((r) => !r.silenced);
+            if (waiting) showRingModal(waiting);
         }
-        if (ringModalId === callId) ringModal?.close();
         syncPhone();
     }
 
@@ -3428,13 +3468,26 @@ export function createRoom({ mount, api, link, user, server, features = [], repo
 
     function showRingModal(ring) {
         ringModal?.close();
-        ringModalId = ring.callId;
-        ringModal = createModal({
+        const modal = createModal({
             className: 'ring-modal',
             label: ring.kind === 'huddle' ? 'A huddle has started' : 'Incoming call',
-            onClose: () => { ringModal = null; ringModalId = null; },
+            onClose: () => {
+                // A dialog's close event is queued rather than immediate, so by the time this
+                // runs a newer ring may already own the window, and must keep it.
+                if (ringModal !== modal) return;
+                ringModal = null;
+                ringModalId = null;
+                // Still ringing, so it was the person who closed it, not the ring ending.
+                const live = ringing.get(ring.callId);
+                if (live) {
+                    live.silenced = true;
+                    syncRingTone();
+                }
+            },
         });
-        ringModal.open({
+        ringModal = modal;
+        ringModalId = ring.callId;
+        modal.open({
             content: `
               <div class="ring-card">
                 <p class="ring-name">${esc(ring.title)}</p>
@@ -3445,7 +3498,7 @@ export function createRoom({ mount, api, link, user, server, features = [], repo
                 </div>
               </div>`,
         });
-        ringModal.element.addEventListener('click', (event) => {
+        modal.element.addEventListener('click', (event) => {
             const live = ringing.get(ring.callId) ?? ring;
             if (event.target.closest('[data-ring-accept]')) answerRing(live);
             else if (event.target.closest('[data-ring-decline]')) declineRing(live);
@@ -3474,10 +3527,17 @@ export function createRoom({ mount, api, link, user, server, features = [], repo
         outgoingThreadId = threadId;
         ringback?.stop();
         ringback = playTone('ringback');
+        // The server settles every ring within RING_MS, so ringback still going well after
+        // that is one whose ending never reached this page — a reconnect in between, say.
+        // It stops rather than ringing into nothing for as long as the page stays open.
+        clearTimeout(ringbackTimer);
+        ringbackTimer = setTimeout(stopRingback, RING_MS + 5_000);
         paint();
     }
 
     function stopRingback() {
+        clearTimeout(ringbackTimer);
+        ringbackTimer = null;
         ringback?.stop();
         ringback = null;
         if (outgoingThreadId) {
