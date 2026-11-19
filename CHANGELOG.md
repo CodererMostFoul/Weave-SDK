@@ -7,6 +7,23 @@ All notable changes to Weave Client are recorded here. The format follows
 The newest entries are what the app shows under **What's new** after it updates, so they are
 written for the people using it rather than for the people building it.
 
+## [1.1.3] - 2026-11-19
+
+### Fixed
+- **Your controls stay on screen on larger phones.** On a phone with a big screen, a
+  foldable, or a phone with its display size turned down, the app was laid out like a narrow
+  computer window: your profile and the mute, sound, camera and leave buttons disappeared
+  into the side menu. They now sit along the bottom of the screen on every phone, the same
+  way at every size — and along the bottom of a narrow window on a computer too.
+
+## [1.1.2] - 2026-11-19
+
+### Fixed
+- **Hearing the room with the screen off.** On a phone, a call could go quiet a minute or so
+  after the screen turned off, or after switching to another app: you stopped hearing
+  everybody, while nothing on screen said anything was wrong. The app now keeps the call
+  running in full for as long as you are in voice.
+
 ## [1.1.1] - 2026-11-18
 
 ### Added
@@ -1051,7 +1068,7 @@ written for the people using it rather than for the people building it.
   above in milliseconds; the rule set is deliberately narrow — things that are wrong, not
   matters of taste.
 
-## [Unreleased]
+## [1.1.2] - 2026-11-19
 
 ### Added
 - Platform adapter: one source tree, two builds. `WEAVE_TARGET=browser` inherits the

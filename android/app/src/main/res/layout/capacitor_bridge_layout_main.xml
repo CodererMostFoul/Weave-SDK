@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Capacitor's own layout, by the same name, so that BridgeActivity inflates this one instead.
+    The only change is the WebView class: WeaveWebView keeps a call's page from being frozen
+    while the screen is off (see WeaveWebView.kt). Capacitor finds it by its id and wires it as
+    a CapacitorWebView, which WeaveWebView still is.
+-->
+<androidx.coordinatorlayout.widget.CoordinatorLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    tools:context="com.getcapacitor.BridgeActivity">
+
+    <io.github.weavespeak.client.WeaveWebView
+        android:id="@+id/webview"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+</androidx.coordinatorlayout.widget.CoordinatorLayout>

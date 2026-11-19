@@ -36,6 +36,7 @@ import { micCodecOptions, screenAudioCodecOptions, openMicrophoneStream } from '
 import { listenOutput, duckState, MAX_LISTEN_GAIN, DUCK_FACTOR } from './listen-policy.js';
 import { bestFitFramerate } from './presets.js';
 import { createStallDetector, readFlow } from './stall.js';
+import { createClockWatch } from './context-clock.js';
 import { buildStreamSample, pickTransport } from './stream-report.js';
 import { watchesToRestore } from './watch-resume.js';
 import { consumeVerdict, reconcileConsumers, wantedStreams, createFlights } from './consume-plan.js';
@@ -253,7 +254,8 @@ export function createVoice({
             deafened,
             pref: audioPrefs.get(key) ?? { muted: false, volume: 1 },
             hasGain: Boolean(entry.gain),
-            contextRunning: audioContext?.state === 'running',
+            // 'running' is the context's own word for it, and a stopped clock outranks it.
+            contextRunning: audioContext?.state === 'running' && !clockStalled,
             duck: duckFor(entry),
         });
         if (out.gain !== null) {
@@ -570,6 +572,41 @@ export function createVoice({
         if (audioContext?.state === 'suspended') audioContext.resume().catch(() => {});
     }
 
+    // A context can say 'running' and render nothing: Chromium froze a phone's page with the
+    // screen off and its context's clock stood still for minutes, state unchanged and no
+    // event fired (context-clock.js has the measurement). The listen policy believed the
+    // state and kept the elements muted, so the room went silent with nothing to show for
+    // it. The clock is checked instead, on the watchdog's tick. That tick cannot run while
+    // the page itself is frozen — WeaveWebView.kt is what prevents that during a call — so
+    // this is the net for what is left. The first look after a thaw is one: the context
+    // renders again by itself, but the elements stay paused, and a fallback that is paused
+    // carries nothing (seen on the same phone). An output device failing underneath a
+    // context, if that can happen, would be the other.
+    const clock = createClockWatch();
+    let clockStalled = false;
+
+    function checkClock() {
+        if (!audioContext) return;
+        const stalled = clock.sample({
+            state: audioContext.state,
+            currentTime: audioContext.currentTime,
+            now: Date.now(),
+        });
+        if (stalled === clockStalled) return;
+        clockStalled = stalled;
+        if (stalled) {
+            log('warn', 'audio context stopped rendering while it says running; voices handed to the audio elements');
+            // A freeze pauses the elements too, and nothing plays them again when it ends,
+            // so the fallback has to be started before it can carry anything.
+            for (const entry of consumers.values()) {
+                if (entry.audio?.paused) entry.audio.play().catch(() => {});
+            }
+        } else {
+            log('info', 'audio context rendering again');
+        }
+        reapplyListening();
+    }
+
     /**
      * Route the room's playback to the chosen output device.
      *
@@ -728,6 +765,7 @@ export function createVoice({
                 // silence. Two seconds is a short enough gap that nobody finishes a
                 // sentence into it.
                 resumeAudioContext();
+                checkClock();
                 assess('send').catch(() => {});
                 assess('recv').catch(() => {});
             }, WATCHDOG_MS);
@@ -738,6 +776,8 @@ export function createVoice({
             this.timer = null;
             detectors.send.reset();
             detectors.recv.reset();
+            clock.reset();
+            clockStalled = false;
             transportState.send = 'new';
             transportState.recv = 'new';
         },

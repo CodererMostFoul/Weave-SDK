@@ -19,6 +19,7 @@
 import { peerMenu, peerMenuHasContent } from './views/peer-menu.js';
 import { avatar, displayName } from './views/parts.js';
 import { html } from '../ui/dom.js';
+import { PHONE_LAYOUT } from '../ui/layout.js';
 import { pressVerdict, LONG_PRESS_MS } from '../ui/long-press.js';
 
 /** Below this a press is a press, not a drag. Roughly the width of a shaky click. */
@@ -34,8 +35,8 @@ const EDGE_GAP_PX = 8;
  */
 const TOUCH_ECHO_MS = 1000;
 
-/** Where the menu becomes a bottom sheet — the same width the phone layout starts at. */
-const SHEET_QUERY = '(max-width: 480px)';
+/** Where the menu becomes a bottom sheet: wherever the app has the shape of a phone. */
+const SHEET_QUERY = PHONE_LAYOUT;
 
 /** What follows the pointer during a drag: enough to say who is being carried. */
 const dragGhost = (person) => `

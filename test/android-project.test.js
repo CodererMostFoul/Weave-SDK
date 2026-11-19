@@ -249,6 +249,34 @@ test('voice in the background: a phoneCall service, never a camera one, and only
     assert.match(read('android/app/build.gradle'), /androidx\.core:core-telecom:\$coreTelecomVersion/);
 });
 
+test('a call\'s page is not frozen with the screen off: the WebView is held visible while in voice', () => {
+    // Chromium froze the hidden page a minute after the screen went off, voice service or not,
+    // and a frozen page's AudioContext renders nothing while saying 'running'. Nothing on the
+    // page can see that from inside, so the only fix is that the page never becomes hidden.
+    const dir = 'android/app/src/main/java/io/github/weavespeak/client';
+
+    // Capacitor inflates its own layout by name; a layout of the same name in the app wins,
+    // and it must keep the id Capacitor looks the WebView up by.
+    const layout = read('android/app/src/main/res/layout/capacitor_bridge_layout_main.xml');
+    assert.match(layout, /<io\.github\.weavespeak\.client\.WeaveWebView\b/);
+    assert.match(layout, /android:id="@\+id\/webview"/);
+
+    const webView = read(`${dir}/WeaveWebView.kt`);
+    assert.match(webView, /class WeaveWebView\([^)]*\) : CapacitorWebView\(/, 'still a CapacitorWebView, which the Bridge wires up');
+    assert.match(webView, /override fun onWindowVisibilityChanged\(visibility: Int\) \{\s*super\.onWindowVisibilityChanged\(if \(holding\) View\.VISIBLE else visibility\)/);
+    assert.match(webView, /super\.onWindowVisibilityChanged\(if \(on\) View\.VISIBLE else windowVisibility\)/,
+        'and letting go reports the window as it really is');
+
+    // Held exactly while the page says it is in voice, both ways.
+    const plugin = read(`${dir}/WeaveNativePlugin.kt`);
+    const session = /fun voiceSession\(call: PluginCall\) \{([\s\S]*?)\n {4}\}/.exec(plugin)?.[1] ?? '';
+    assert.match(session, /\(bridge\.webView as\? WeaveWebView\)\?\.holdVisible\(on\)/);
+    assert.ok(session.indexOf('holdVisible(on)') < session.indexOf('if (!on)'), 'before the early return for leaving');
+
+    // With the page held visible, document.hidden no longer stops the room's animations.
+    assert.match(read('src/room/index.js'), /const still = prefs\.staticBackground \|\| document\.fullscreenElement \|\| !appVisible;/);
+});
+
 test('a call opens the app only through its own private entrance', () => {
     // MainActivity is exported (launcher, invite links). Anything that answers or places a
     // call goes through a non-exported alias, so no other app — and no web page — can make

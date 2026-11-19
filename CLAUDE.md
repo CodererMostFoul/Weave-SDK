@@ -80,6 +80,7 @@ holds the app log. Fatal startup errors go to `%TEMP%\weave\startup-crash.log`.
 | Anything Android-native the page uses | `src/platform/native-capacitor.js` (the only `@capacitor/*` import), shaped by `src/platform/mobile.js` |
 | Android Back button, signing back in at launch | `src/ui/back.js`, `src/auth/resume.js` |
 | Wording that differs on a phone | `src/platform/copy.js` |
+| Where the app takes a phone's shape, and the dock of voice controls along the bottom | `PHONE_LAYOUT` in `src/ui/layout.js` (CSS and JS both use it); the 860px and phone blocks in `src/styles/shell.css` |
 | The strands — speaking strings, the room background, the sign-in screen | `src/ui/loom.js`, `src/ui/weave-background.js`, `src/ui/join-background.js` |
 | Screen share quality, and the chooser that asks for it | `src/media/presets.js`, `shareSetupView` in `src/room/views/stage.js` |
 | Slash commands (`/roll`), the offer while typing one | `src/room/commands.js` |
@@ -139,6 +140,15 @@ holds the app log. Fatal startup errors go to `%TEMP%\weave\startup-crash.log`.
   stayed truthy, `enableMic()`'s guard returned it, and the person was silent for the rest of
   the session with every indicator normal. The client now drops the handle itself on landing
   in such a room. A guard on a producer handle must check the transport too.
+- **The Android WebView freezes a hidden page, call or no call.** On the S9 (WebView 157) the
+  page froze 60 s after the screen went off, with the voice service running, the mic open and
+  the phone in call mode. A frozen page's AudioContext stops rendering while `state` still says
+  `'running'`, its timers stop (so the server drops the peer ~2 min later), and its `<audio>`
+  elements come back paused. The foreground service keeps the process, not the page.
+  `WeaveWebView.kt` reports the window as visible while in voice; `context-clock.js` stops
+  trusting a context whose clock stands still. To look: `adb forward tcp:9333
+  localabstract:webview_devtools_remote_<pid>`, evaluate over CDP, and compare an
+  AudioContext's `currentTime` with the wall clock — the state will not tell you.
 - **Deltas are fragile.** An update is ~1 MB against a ~108 MB installer because
   electron-updater diffs blockmaps. `npm run predict-delta` fails the release if that
   ratio degrades — usually a changed build machine or bumped toolchain.

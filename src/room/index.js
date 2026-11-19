@@ -315,6 +315,10 @@ export function createRoom({ mount, api, link, user, server, features = [], repo
     let outgoingThreadId = null;
     let lockedNow = false;
     let lastOverLock = null;
+    // Whether the phone app is in front (Capacitor's app state; always true elsewhere). Up
+    // here rather than with the rest of the phone's state because applyMotionPrefs reads it,
+    // and that runs while the room is still being built.
+    let appVisible = true;
 
     // key `${cid}:${slot}` -> MediaStream. 'self' is our own preview.
     const videoStreams = new Map();
@@ -1344,9 +1348,13 @@ export function createRoom({ mount, api, link, user, server, features = [], repo
     function applyMotionPrefs() {
         // A tile in fullscreen is the second reason to stop, and it is not a preference:
         // see onFullscreenChange for what these cost over a full-screen video.
+        // A phone app in the background is the third. During a call the page is held visible
+        // so that it is not frozen (WeaveWebView.kt), and document.hidden — which is what
+        // each renderer pauses on by itself — then stays false with the screen off.
         // Bubbles stop drifting for the same reasons, but stay where they are: still is not gone.
-        bubbleRoom?.setMoving(!(prefs.staticBackground || document.fullscreenElement));
-        if (prefs.staticBackground || document.fullscreenElement) {
+        const still = prefs.staticBackground || document.fullscreenElement || !appVisible;
+        bubbleRoom?.setMoving(!still);
+        if (still) {
             background?.stop();
             loom?.stop();
             return;
@@ -3186,7 +3194,6 @@ export function createRoom({ mount, api, link, user, server, features = [], repo
     let lastEar = null;
     let callHold = { held: false, before: null };
     let inPip = false;
-    let appVisible = true;
     let askedNotifications = false;
     let lastNetwork = null;
     const phoneUnsubscribe = [];
@@ -3282,6 +3289,7 @@ export function createRoom({ mount, api, link, user, server, features = [], repo
             // at the heartbeat's second missed ping.
             link.probe();
         }
+        applyMotionPrefs();
         syncPhone();
     }
 

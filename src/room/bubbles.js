@@ -11,6 +11,7 @@ import { BubblesField } from '../ui/bubbles.js';
 import { bubblePopupView, allBubblesView } from './views/bubbles.js';
 import { toTimelineItems } from './messages.js';
 import { html } from '../ui/dom.js';
+import { PHONE_LAYOUT } from '../ui/layout.js';
 import { createAttachmentSlot, outgoingMessage } from './compose.js';
 import { platform } from '../platform/index.js';
 import {
@@ -23,7 +24,7 @@ const EDGE = 8;
 const FIRST_PAGE = 30;
 
 /** A phone: the card becomes a sheet along the bottom, as a person's menu does there. */
-const PHONE = '(max-width: 480px)';
+const PHONE = PHONE_LAYOUT;
 /**
  * A finger as the main pointer: focusing the input there throws the keyboard up. Not
  * (hover: none), which some phones get wrong — see the Touch section of shell.css.

@@ -10,6 +10,8 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { PHONE_LAYOUT } from '../src/ui/layout.js';
+
 const DIR = fileURLToPath(new URL('../src/styles', import.meta.url));
 
 const read = (name) => readFileSync(join(DIR, name), 'utf8');
@@ -174,15 +176,43 @@ test('the room states its column, so nothing inside can push it wider than its p
     assert.match(code(read('shell.css')), /\.room\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/);
 });
 
-test('a phone gets one column, a dock for its voice controls, and the rail in the drawer', () => {
-    const { body } = mediaBlock(code(read('shell.css')), '(max-width: 480px)');
+test('a phone gets one column and the rail in the drawer, at any width a phone reports', () => {
+    // The stylesheet's phone block and the JS that opens menus as sheets decide by the same
+    // query, held in one place. A phone used to mean "480px or less", so a large phone got a
+    // computer's narrow-window layout instead.
+    assert.match(PHONE_LAYOUT, /\(pointer: coarse\) and \(max-width: 860px\)/, 'a finger, up to where the column returns');
+    const { body } = mediaBlock(code(read('shell.css')), PHONE_LAYOUT);
     assert.match(body, /\.app-body\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/);
     assert.match(body, /\.rail\s*\{\s*display:\s*none/);
-    // The dock is the closed sidebar showing only the self bar — the same DOM, never a copy.
-    assert.match(body, /\.app-shell:not\(\.drawer-open\) \.sidebar > :not\(#selfBarSlot\)\s*\{\s*display:\s*none/);
     assert.match(body, /\.app-shell\.drawer-open \.rail\s*\{[^}]*position:\s*fixed/);
     // The keyboard takes the space the dock was using.
     assert.match(body, /:has\(\.composer-input:focus\) \.sidebar\s*\{\s*display:\s*none/);
+
+    const src = (path) => readFileSync(fileURLToPath(new URL(`../src/${path}`, import.meta.url)), 'utf8');
+    for (const file of ['room/peer-actions.js', 'room/bubbles.js']) {
+        assert.match(src(file), /import \{ PHONE_LAYOUT \} from '\.\.\/ui\/layout\.js'/, `${file} asks the shared query`);
+        assert.doesNotMatch(src(file), /'\(max-width: \d+px\)'/, `${file} keeps no width of its own`);
+    }
+});
+
+test('the self bar never leaves the screen: wherever the sidebar folds away, it docks', () => {
+    // Who you are, mute, deafen, camera, screen and leave live at the foot of the sidebar.
+    // Between 481 and 860px the sidebar folded into the drawer and took all of them with
+    // it — a large phone, or a foldable, had no mute button on screen at all.
+    const css = code(read('shell.css'));
+    const { body } = mediaBlock(css, '(max-width: 860px)');
+    assert.match(body, /\.sidebar\s*\{\s*display:\s*none/, 'this is where the column folds');
+    // The dock is the closed sidebar showing only the self bar — the same DOM, never a copy.
+    assert.match(body, /\.app-shell:not\(\.drawer-open\) \.sidebar\s*\{[^}]*display:\s*block[^}]*grid-row:\s*2/);
+    assert.match(body, /\.app-shell:not\(\.drawer-open\) \.sidebar > :not\(#selfBarSlot\)\s*\{\s*display:\s*none/);
+    assert.match(body, /\.app-body\s*\{[^}]*grid-template-rows:\s*minmax\(0,\s*1fr\) auto/, 'with a row of its own');
+    // No narrower block may hide the column without the dock, which this one sets up.
+    for (const [query, width] of [...css.matchAll(/@media ([^{]*?max-width: (\d+)px[^{]*)\{/g)].map((m) => [m[1], Number(m[2])])) {
+        if (width >= 860) continue;
+        const inner = mediaBlock(css, query.trim()).body;
+        assert.doesNotMatch(inner, /#selfBarSlot\s*\{[^}]*display:\s*none|\.self-bar\s*\{[^}]*display:\s*none/,
+            `${query.trim()} hides the self bar`);
+    }
 });
 
 test('nothing waits for a hover a touchscreen cannot make', () => {

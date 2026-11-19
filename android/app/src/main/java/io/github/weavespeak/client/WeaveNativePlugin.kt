@@ -252,6 +252,9 @@ class WeaveNativePlugin : Plugin() {
     fun voiceSession(call: PluginCall) {
         val on = call.getBoolean("on") ?: false
         bridge.executeOnMainThread {
+            // The page carrying the call must not be frozen when the screen goes off, which
+            // the service alone does not prevent. See WeaveWebView.
+            (bridge.webView as? WeaveWebView)?.holdVisible(on)
             if (!on) {
                 VoiceService.end()
                 call.resolve(JSObject().apply { put("ok", true) })

@@ -106,6 +106,22 @@ if (platform.back?.available) {
     platform.back.onBack(() => runBack({ minimize: () => platform.back.minimize() }));
 }
 
+// A page the browser freezes stops everything at once — timers, the heartbeat, every
+// AudioContext — with no error anywhere, and the WebView on a test phone did it to a hidden
+// page a minute after the screen went off, mid-call. That cost calls their sound with nothing
+// in the log to say why, so it is logged now. Only once the page thaws, since nothing runs
+// while it is frozen; the line says how long it was out. A resume with no freeze before it
+// happens too (the WebView sends one on becoming visible), and says nothing.
+let frozenAt = null;
+document.addEventListener('freeze', () => {
+    frozenAt = Date.now();
+});
+document.addEventListener('resume', () => {
+    if (frozenAt === null) return;
+    platform.log('warn', `page was frozen for ${Math.round((Date.now() - frozenAt) / 1000)} s`);
+    frozenAt = null;
+});
+
 /**
  * Point the topbar at whatever server is current.
  *

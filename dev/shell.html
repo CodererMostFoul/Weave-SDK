@@ -26,10 +26,11 @@ import { html } from '../src/ui/dom.js';
 import { WeaveBackground } from '../src/ui/weave-background.js';
 import { userHue } from '../src/ui/hue.js';
 import { fixture } from './fixtures.js';
+import { PHONE_LAYOUT } from '../src/ui/layout.js';
 
 const name = new URLSearchParams(location.search).get('fixture') ?? '';
 const state = fixture(name);
-const narrow = () => window.matchMedia('(max-width: 480px)').matches;
+const narrow = () => window.matchMedia(PHONE_LAYOUT).matches;
 
 const app = document.getElementById('app');
 app.innerHTML = '';
